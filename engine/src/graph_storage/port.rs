@@ -1,3 +1,4 @@
+use crate::engines::chie::model::ChangeAnalysis;
 use crate::engines::coie::model::{CodeGraph, GraphRelationship};
 use crate::engines::tie::model::{TestEntity, TestRelationship};
 use crate::source::RepositoryContext;
@@ -28,4 +29,10 @@ pub trait GraphStorage: Send + Sync {
         entity_id: &str,
         limit: usize,
     ) -> Result<Vec<GraphRelationship>, StorageError>;
+    async fn analyze_change(
+        &self,
+        context: &RepositoryContext,
+        entity_id: &str,
+        max_depth: usize,
+    ) -> Result<ChangeAnalysis, StorageError>;
 }

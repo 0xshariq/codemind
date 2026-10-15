@@ -8,9 +8,25 @@ export async function GET(
   if (!repositoryId.trim()) {
     return NextResponse.json({ error: "repositoryId is required" }, { status: 400 });
   }
+  const configured = process.env.CODEMIND_REPOSITORIES_JSON;
+  if (configured) {
+    try {
+      const repositories = JSON.parse(configured) as unknown;
+      if (Array.isArray(repositories)) {
+        const repository = repositories.find(
+          (item): item is { repositoryId?: string } =>
+            !!item && typeof item === "object" && (item as { repositoryId?: unknown }).repositoryId === repositoryId,
+        );
+        if (repository) return NextResponse.json({ outcome: "success", repository });
+        return NextResponse.json({ outcome: "empty", repositoryId }, { status: 404 });
+      }
+    } catch {
+      return NextResponse.json({ outcome: "failed", error: "CODEMIND_REPOSITORIES_JSON is invalid" }, { status: 500 });
+    }
+  }
   return NextResponse.json({
     repositoryId,
-    outcome: "unsupported",
-    limitations: ["Repository management is outside the Day 1 local-source slice."],
-  }, { status: 501 });
+    outcome: "unavailable",
+    limitations: ["Configure CODEMIND_REPOSITORIES_JSON for local repository discovery."],
+  });
 }

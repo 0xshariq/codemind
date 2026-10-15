@@ -1,6 +1,6 @@
 use crate::{
     contract::generated::{
-        self, QueryResponse, SymbolRelationshipQuery,
+        self, ChangeAnalysisQuery, QueryResponse, SymbolRelationshipQuery,
         intelligence_service_server::IntelligenceService, query_response,
     },
     graph_storage::{GraphStorage, StorageError},
@@ -69,6 +69,47 @@ where
                 evidence: Vec::new(),
                 diagnostics: Vec::new(),
                 limitations: vec!["Day 1 query returns one-hop outgoing relationships".to_owned()],
+            })),
+        }))
+    }
+
+    async fn analyze_change(
+        &self,
+        request: Request<ChangeAnalysisQuery>,
+    ) -> Result<Response<QueryResponse>, Status> {
+        let input = request.into_inner();
+        let context = input
+            .context
+            .ok_or_else(|| Status::invalid_argument("context is required"))?;
+        let context = RepositoryContext {
+            repository_id: context.repository_id,
+            workspace_id: context.workspace_id,
+            source_snapshot_id: context.source_snapshot_id,
+            graph_version: context.graph_version,
+        };
+        let analysis = self
+            .storage
+            .analyze_change(&context, &input.symbol_id, input.max_depth as usize)
+            .await
+            .map_err(storage_status)?;
+        let data_json = serde_json::to_string(&analysis)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        Ok(Response::new(QueryResponse {
+            result: Some(query_response::Result::Data(generated::CanonicalResult {
+                outcome: generated::Outcome::Success as i32,
+                completeness: generated::Completeness::Complete as i32,
+                freshness: generated::Freshness::Current as i32,
+                context: Some(generated::RepositoryContext {
+                    repository_id: analysis.context.repository_id,
+                    workspace_id: analysis.context.workspace_id,
+                    source_snapshot_id: analysis.context.source_snapshot_id,
+                    graph_version: analysis.context.graph_version,
+                }),
+                correlation: None,
+                data_json,
+                evidence: Vec::new(),
+                diagnostics: Vec::new(),
+                limitations: analysis.limitations,
             })),
         }))
     }

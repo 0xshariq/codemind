@@ -11,6 +11,13 @@ message SymbolRelationshipQuery {
   Correlation correlation = 4;
 }
 
+message ChangeAnalysisQuery {
+  string symbol_id = 1;
+  uint32 max_depth = 2;
+  RepositoryContext context = 3;
+  Correlation correlation = 4;
+}
+
 message QueryResponse {
   oneof result {
     CanonicalResult data = 1;
@@ -20,4 +27,5 @@ message QueryResponse {
 
 service IntelligenceService {
   rpc QuerySymbolRelationships(SymbolRelationshipQuery) returns (QueryResponse);
+  rpc AnalyzeChange(ChangeAnalysisQuery) returns (QueryResponse);
 }

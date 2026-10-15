@@ -1,4 +1,8 @@
-use crate::engines::coie::model::{CodeGraph, GraphRelationship, RelationshipKind};
+use crate::engines::chie::engine::ChieEngine;
+use crate::engines::chie::model::ChangeAnalysis;
+use crate::engines::coie::model::{
+    CodeGraph, EntityKind, GraphEntity, GraphRelationship, RelationshipKind,
+};
 use crate::engines::tie::model::{TestEntity, TestRelationship, TestRelationshipKind};
 use crate::graph_storage::port::{GraphStorage, StorageError};
 use crate::source::RepositoryContext;
@@ -124,6 +128,89 @@ impl GraphStorage for FalkorDbStorage {
             });
         }
         Ok(relationships)
+    }
+
+    async fn analyze_change(
+        &self,
+        context: &RepositoryContext,
+        entity_id: &str,
+        max_depth: usize,
+    ) -> Result<ChangeAnalysis, StorageError> {
+        Self::validate_context(context)?;
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph.ro_query(
+            "MATCH (n:CodeEntity) WHERE n.workspace_id = $workspace AND n.repository_id = $repository AND n.snapshot_id = $snapshot RETURN n.id AS id, n.kind AS kind, n.name AS name, n.path AS path, n.line AS line",
+        )
+        .with_param("workspace", context.workspace_id.clone())
+        .with_param("repository", context.repository_id.clone())
+        .with_param("snapshot", context.source_snapshot_id.clone())
+        .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut entities = Vec::new();
+        while let Some(row) = rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            entities.push(GraphEntity {
+                id: row
+                    .try_get("id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                kind: match row
+                    .try_get::<String>("kind")
+                    .map_err(|error| StorageError::Query(error.to_string()))?
+                    .as_str()
+                {
+                    "File" => EntityKind::File,
+                    _ => EntityKind::Symbol,
+                },
+                name: row
+                    .try_get("name")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                path: row
+                    .try_get("path")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                line: row
+                    .try_get::<i64>("line")
+                    .map_err(|error| StorageError::Query(error.to_string()))?
+                    as u32,
+                context: context.clone(),
+            });
+        }
+        let mut relationship_rows = graph.ro_query(
+            "MATCH (a:CodeEntity)-[r]->(b:CodeEntity) WHERE r.workspace_id = $workspace AND r.repository_id = $repository AND r.snapshot_id = $snapshot RETURN r.id AS relationship_id, type(r) AS relationship_type, a.id AS from_id, b.id AS to_id LIMIT 1000",
+        )
+        .with_param("workspace", context.workspace_id.clone())
+        .with_param("repository", context.repository_id.clone())
+        .with_param("snapshot", context.source_snapshot_id.clone())
+        .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut relationships = Vec::new();
+        while let Some(row) = relationship_rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            relationships.push(GraphRelationship {
+                id: row
+                    .try_get("relationship_id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                kind: parse_relationship(
+                    row.try_get("relationship_type")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                ),
+                from: row
+                    .try_get("from_id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                to: row
+                    .try_get("to_id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                context: context.clone(),
+            });
+        }
+        let graph_data = CodeGraph {
+            context: context.clone(),
+            entities,
+            relationships,
+            diagnostics: Vec::new(),
+        };
+        ChieEngine {
+            max_depth: max_depth.clamp(1, 8),
+        }
+        .analyze(&graph_data, &[], &[], entity_id)
+        .map_err(StorageError::Query)
     }
 
     async fn write_test_graph(
