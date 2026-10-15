@@ -4,6 +4,8 @@
 >
 > This document contains operating rules only. The other project documents are the source of truth for architecture, implementation planning, testing, demo capture, and visual design.
 
+**Design Documentation and `docs/design/` Compliance Rule: Before implementing or modifying any UI, carefully inspect `docs/design-system.md` and all relevant design documents inside `docs/design/`. The `design-system.md` file defines the global design principles, visual tokens, typography, colors, spacing, component conventions, and shared UI rules, while the files inside `docs/design/` provide additional detailed designs, screen layouts, interaction patterns, and other screen-specific requirements. Treat these documents as complementary sources of truth, not as substitutes for one another. Do not assume that a design is unspecified merely because its details are absent from `design-system.md`. Identify and follow the applicable screen-specific designs in `docs/design/` before implementing a screen or component. Maintain consistency with the global design system while faithfully implementing the corresponding detailed designs. Do not invent, omit, or arbitrarily change documented layouts, interactions, or visual decisions. If a design document is ambiguous, incomplete, or conflicts with another authoritative design document, identify the issue and resolve it explicitly before making assumptions that could cause inconsistent implementation. Whenever the design documentation is intentionally updated, ensure that related screens, shared components, and applicable documentation remain consistent.**
+
 ## 1. Mission
 
 - Implement the current user-approved CodeMind scope exactly as specified.

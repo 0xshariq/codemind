@@ -275,7 +275,7 @@ The three subprojects demonstrate the same semantic investigation flow. Do not i
 
 ## 4.3 Expected graph assertions
 
-Expected graph data under `tests/apps/web/src/tests/graph-conformance/expected/` should assert source-supported facts, including:
+Expected graph data under `apps/web/src/tests/graph-conformance/expected/` should assert source-supported facts, including:
 
 - canonical entity kind,
 - repository-relative path,
@@ -1662,7 +1662,7 @@ Before running tests:
 - [ ] Record the candidate commit SHA.
 - [ ] Confirm `AGENTS.md`, `architecture.md`, `implementation-plan.md`, `testing.md`, `design-system.md` and `demo.md` refer to the same architecture/scope.
 - [ ] Confirm there are no known uncommitted changes that could invalidate the test record.
-- [ ] Confirm `.env.example` contains names/placeholders only, not real secrets.
+- [ ] Confirm `apps/web/.env.example` contains names/placeholders only, not real secrets.
 - [ ] Confirm the controlled demo/test inputs and expected graph data are version controlled.
 - [ ] Record any already-known limitation; do not conceal it during the final run.
 
@@ -2011,7 +2011,7 @@ Do not merge a Day 4 fix without checking the affected dependency path.
 
 # 21. Suggested Command Contract
 
-The root workspace should provide stable, documented command wrappers. Their exact invocation should match the scripts actually implemented in `package.json`, `apps/web/package.json`, Cargo and the E2E runner. Do not document a command as passing until it has actually been run.
+The web workspace should provide stable, documented command wrappers. Their exact invocation should match the scripts actually implemented in `apps/web/package.json`, `apps/web/package.json`, Cargo and the E2E runner. Do not document a command as passing until it has actually been run.
 
 The minimum command categories are:
 

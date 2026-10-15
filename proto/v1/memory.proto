@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package codemind.v1;
+
+import "v1/common.proto";
+
+message MemoryReference {
+  string memory_id = 1;
+  string scope = 2;
+  string content = 3;
+  RepositoryContext context = 4;
+}
+
+message Handoff {
+  string handoff_id = 1;
+  string status = 2;
+  string payload_json = 3;
+  RepositoryContext context = 4;
+}

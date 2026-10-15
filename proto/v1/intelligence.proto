@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package codemind.v1;
+
+import "v1/common.proto";
+
+message SymbolRelationshipQuery {
+  string symbol_id = 1;
+  uint32 limit = 2;
+  RepositoryContext context = 3;
+  Correlation correlation = 4;
+}
+
+message QueryResponse {
+  oneof result {
+    CanonicalResult data = 1;
+    ErrorStatus error = 2;
+  }
+}
+
+service IntelligenceService {
+  rpc QuerySymbolRelationships(SymbolRelationshipQuery) returns (QueryResponse);
+}

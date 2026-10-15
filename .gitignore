@@ -44,3 +44,6 @@
 
 # rust engine
 /engine/target
+
+# ignoring day implementation files
+/day-*.md
