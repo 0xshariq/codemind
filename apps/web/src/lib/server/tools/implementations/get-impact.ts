@@ -1,0 +1,1 @@
+export { analyzeChange as getImpact } from "./analyze-change";
