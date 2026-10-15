@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package codemind.v1;
+
+import "v1/common.proto";
+
+message ResolveRepositoryRequest {
+  string source_path = 1;
+  RepositoryContext context = 2;
+  Correlation correlation = 3;
+}
+
+message RepositorySnapshot {
+  RepositoryContext context = 1;
+  string repository_name = 2;
+  string manifest_json = 3;
+}
+
+message ResolveRepositoryResponse {
+  oneof result {
+    RepositorySnapshot snapshot = 1;
+    ErrorStatus error = 2;
+  }
+}
+
+service RepositoryService {
+  rpc ResolveRepository(ResolveRepositoryRequest) returns (ResolveRepositoryResponse);
+}

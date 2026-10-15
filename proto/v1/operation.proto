@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package codemind.v1;
+
+import "v1/common.proto";
+
+message ProgressEvent {
+  string event_id = 1;
+  uint64 sequence = 2;
+  string engine = 3;
+  string stage = 4;
+  string timestamp = 5;
+  Correlation correlation = 6;
+  RepositoryContext context = 7;
+  string message = 8;
+}

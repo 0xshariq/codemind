@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package codemind.v1;
+
+message RepositoryContext {
+  string repository_id = 1;
+  string workspace_id = 2;
+  string source_snapshot_id = 3;
+  string graph_version = 4;
+}
+
+message Correlation {
+  string request_id = 1;
+  string trace_id = 2;
+  string operation_id = 3;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  SUCCESS = 1;
+  EMPTY = 2;
+  PARTIAL = 3;
+  UNSUPPORTED = 4;
+  INVALID = 5;
+  UNAVAILABLE = 6;
+  FAILED = 7;
+}
+
+enum Completeness {
+  COMPLETENESS_UNSPECIFIED = 0;
+  COMPLETE = 1;
+  INCOMPLETE = 2;
+  TRUNCATED = 3;
+}
+
+enum Freshness {
+  FRESHNESS_UNSPECIFIED = 0;
+  CURRENT = 1;
+  STALE = 2;
+}
+
+message SourceReference {
+  string path = 1;
+  uint32 start_line = 2;
+  uint32 start_column = 3;
+  uint32 end_line = 4;
+  uint32 end_column = 5;
+  string snapshot_id = 6;
+}
+
+message Diagnostic {
+  string code = 1;
+  string message = 2;
+  string path = 3;
+  string severity = 4;
+}
+
+message CanonicalResult {
+  Outcome outcome = 1;
+  Completeness completeness = 2;
+  Freshness freshness = 3;
+  RepositoryContext context = 4;
+  Correlation correlation = 5;
+  string data_json = 6;
+  repeated SourceReference evidence = 7;
+  repeated Diagnostic diagnostics = 8;
+  repeated string limitations = 9;
+}
+
+message ErrorStatus {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  RepositoryContext context = 4;
+  Correlation correlation = 5;
+}
