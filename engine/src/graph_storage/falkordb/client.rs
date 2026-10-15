@@ -34,6 +34,7 @@ impl FalkorDbStorage {
         if context.workspace_id.trim().is_empty()
             || context.repository_id.trim().is_empty()
             || context.source_snapshot_id.trim().is_empty()
+            || context.graph_version.trim().is_empty()
         {
             return Err(StorageError::InvalidContext);
         }
@@ -49,7 +50,7 @@ impl GraphStorage for FalkorDbStorage {
         for entity in &graph_data.entities {
             graph
                 .query(
-                    "MERGE (n:CodeEntity {id: $id}) SET n.kind = $kind, n.name = $name, \
+                    "MERGE (n:CodeEntity {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) SET n.kind = $kind, n.name = $name, \
                  n.path = $path, n.line = $line, n.workspace_id = $workspace, \
                  n.repository_id = $repository, n.snapshot_id = $snapshot",
                 )
@@ -61,6 +62,7 @@ impl GraphStorage for FalkorDbStorage {
                 .with_param("workspace", entity.context.workspace_id.clone())
                 .with_param("repository", entity.context.repository_id.clone())
                 .with_param("snapshot", entity.context.source_snapshot_id.clone())
+                .with_param("graph_version", entity.context.graph_version.clone())
                 .execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
@@ -68,9 +70,8 @@ impl GraphStorage for FalkorDbStorage {
         for relationship in &graph_data.relationships {
             let relationship_type = relationship_type(&relationship.kind);
             let query = format!(
-                "MATCH (a:CodeEntity {{id: $from}}), (b:CodeEntity {{id: $to}}) \
-                 MERGE (a)-[r:{relationship_type} {{id: $id}}]->(b) \
-                 SET r.workspace_id = $workspace, r.repository_id = $repository, r.snapshot_id = $snapshot"
+                "MATCH (a:CodeEntity {{id: $from, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}), (b:CodeEntity {{id: $to, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}) \
+                 MERGE (a)-[r:{relationship_type} {{id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}]->(b)"
             );
             graph
                 .query(query)
@@ -80,6 +81,7 @@ impl GraphStorage for FalkorDbStorage {
                 .with_param("workspace", relationship.context.workspace_id.clone())
                 .with_param("repository", relationship.context.repository_id.clone())
                 .with_param("snapshot", relationship.context.source_snapshot_id.clone())
+                .with_param("graph_version", relationship.context.graph_version.clone())
                 .execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
@@ -96,8 +98,8 @@ impl GraphStorage for FalkorDbStorage {
         Self::validate_context(context)?;
         let mut graph = self.client.select_graph(&self.graph_name);
         let mut result = graph.ro_query(
-            "MATCH (a:CodeEntity {id: $id})-[r]->(b:CodeEntity) \
-             WHERE r.workspace_id = $workspace AND r.repository_id = $repository AND r.snapshot_id = $snapshot \
+            "MATCH (a:CodeEntity {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->(b:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
+             WHERE r.workspace_id = $workspace AND r.repository_id = $repository AND r.snapshot_id = $snapshot AND r.graph_version = $graph_version \
              RETURN r.id AS relationship_id, type(r) AS relationship_type, a.id AS from_id, b.id AS to_id \
              LIMIT $limit",
         )
@@ -105,6 +107,7 @@ impl GraphStorage for FalkorDbStorage {
         .with_param("workspace", context.workspace_id.clone())
         .with_param("repository", context.repository_id.clone())
         .with_param("snapshot", context.source_snapshot_id.clone())
+        .with_param("graph_version", context.graph_version.clone())
         .with_param("limit", limit.min(1000) as i64)
         .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
         let mut relationships = Vec::new();
@@ -139,11 +142,12 @@ impl GraphStorage for FalkorDbStorage {
         Self::validate_context(context)?;
         let mut graph = self.client.select_graph(&self.graph_name);
         let mut rows = graph.ro_query(
-            "MATCH (n:CodeEntity) WHERE n.workspace_id = $workspace AND n.repository_id = $repository AND n.snapshot_id = $snapshot RETURN n.id AS id, n.kind AS kind, n.name AS name, n.path AS path, n.line AS line",
+            "MATCH (n:CodeEntity) WHERE n.workspace_id = $workspace AND n.repository_id = $repository AND n.snapshot_id = $snapshot AND n.graph_version = $graph_version RETURN n.id AS id, n.kind AS kind, n.name AS name, n.path AS path, n.line AS line",
         )
         .with_param("workspace", context.workspace_id.clone())
         .with_param("repository", context.repository_id.clone())
         .with_param("snapshot", context.source_snapshot_id.clone())
+        .with_param("graph_version", context.graph_version.clone())
         .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
         let mut entities = Vec::new();
         while let Some(row) = rows.data.next().await {
@@ -174,11 +178,12 @@ impl GraphStorage for FalkorDbStorage {
             });
         }
         let mut relationship_rows = graph.ro_query(
-            "MATCH (a:CodeEntity)-[r]->(b:CodeEntity) WHERE r.workspace_id = $workspace AND r.repository_id = $repository AND r.snapshot_id = $snapshot RETURN r.id AS relationship_id, type(r) AS relationship_type, a.id AS from_id, b.id AS to_id LIMIT 1000",
+            "MATCH (a:CodeEntity)-[r]->(b:CodeEntity) WHERE r.workspace_id = $workspace AND r.repository_id = $repository AND r.snapshot_id = $snapshot AND r.graph_version = $graph_version RETURN r.id AS relationship_id, type(r) AS relationship_type, a.id AS from_id, b.id AS to_id",
         )
         .with_param("workspace", context.workspace_id.clone())
         .with_param("repository", context.repository_id.clone())
         .with_param("snapshot", context.source_snapshot_id.clone())
+        .with_param("graph_version", context.graph_version.clone())
         .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
         let mut relationships = Vec::new();
         while let Some(row) = relationship_rows.data.next().await {
@@ -223,7 +228,7 @@ impl GraphStorage for FalkorDbStorage {
             let mut graph = self.client.select_graph(&self.graph_name);
             graph
                 .query(
-                    "MERGE (n:TestEntity {id: $id}) SET n.name = $name, n.path = $path, \
+                    "MERGE (n:TestEntity {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) SET n.name = $name, n.path = $path, \
                  n.line = $line, n.framework = $framework, n.workspace_id = $workspace, \
                  n.repository_id = $repository, n.snapshot_id = $snapshot",
                 )
@@ -235,25 +240,30 @@ impl GraphStorage for FalkorDbStorage {
                 .with_param("workspace", test.context.workspace_id.clone())
                 .with_param("repository", test.context.repository_id.clone())
                 .with_param("snapshot", test.context.source_snapshot_id.clone())
+                .with_param("graph_version", test.context.graph_version.clone())
                 .execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
         }
         for relationship in relationships {
             Self::validate_context(&relationship.context)?;
-            if relationship.kind != TestRelationshipKind::DeclaredBy {
+            let mut graph = self.client.select_graph(&self.graph_name);
+            if relationship.kind != TestRelationshipKind::Targets {
                 continue;
             }
-            let mut graph = self.client.select_graph(&self.graph_name);
+            let target = relationship.target_symbol_name.clone().unwrap_or_default();
             graph.query(
-                "MATCH (test:TestEntity {id: $test_id}) MERGE (test)-[r:DECLARED_BY {path: $path}]->(test) \
-                 SET r.workspace_id = $workspace, r.repository_id = $repository, r.snapshot_id = $snapshot",
+                "MATCH (test:TestEntity {id: $test_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
+                 MATCH (target:CodeEntity {name: $target, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
+                 MERGE (test)-[r:TARGETS {path: $path, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}]->(target)"
             )
             .with_param("test_id", relationship.test_id.clone())
             .with_param("path", relationship.evidence_path.clone())
             .with_param("workspace", relationship.context.workspace_id.clone())
             .with_param("repository", relationship.context.repository_id.clone())
             .with_param("snapshot", relationship.context.source_snapshot_id.clone())
+            .with_param("graph_version", relationship.context.graph_version.clone())
+            .with_param("target", target)
             .execute()
             .await
             .map_err(|error| StorageError::Query(error.to_string()))?;

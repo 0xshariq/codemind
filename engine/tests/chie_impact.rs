@@ -78,7 +78,7 @@ fn multi_hop_relationships_produce_direct_indirect_impact_and_tests() {
 }
 
 #[test]
-fn removing_a_required_edge_changes_the_analysis() {
+fn missing_symbol_produces_empty_analysis() {
     let context = context();
     let graph = CodeGraph {
         context,

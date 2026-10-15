@@ -58,10 +58,15 @@ export function ChatPanel({ context, symbolId }: { context: Context; symbolId: s
         setRunning(false);
       }
     };
-    source.onerror = () => {
-      source.close();
-      setRunning(false);
-      setError("Operation progress stream unavailable");
+    source.onerror = async () => {
+      const history = await fetch(`/api/operations/${operationId}`).then((value) => value.json()) as { events?: TimelineEvent[]; result?: { answer?: string; error?: string } };
+      setEvents(history.events ?? []);
+      const status = history.events?.at(-1)?.status;
+      if (status === "completed" || status === "failed") {
+        source.close();
+        setRunning(false);
+        if (history.result?.error) setError(history.result.error);
+      }
     };
   }
 

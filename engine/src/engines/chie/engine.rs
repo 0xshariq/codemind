@@ -28,20 +28,20 @@ impl ChieEngine {
         test_relationships: &[TestRelationship],
         selected_entity_id: &str,
     ) -> Result<ChangeAnalysis, String> {
-        if graph.context
-            != tests
-                .first()
-                .map(|test| &test.context)
-                .cloned()
-                .unwrap_or_else(|| graph.context.clone())
+        if tests.iter().any(|test| test.context != graph.context)
+            || test_relationships
+                .iter()
+                .any(|relationship| relationship.context != graph.context)
         {
             return Err("test graph context does not match code graph context".to_owned());
         }
-        let paths = aggregation::deduplicate(traversal::traverse(
+        let mut paths = aggregation::deduplicate(traversal::traverse(
             &graph.relationships,
             selected_entity_id,
             self.max_depth,
         ));
+        let truncated = paths.len() > crate::contract::result::MAX_PATHS;
+        paths.truncate(crate::contract::result::MAX_PATHS);
         let impacted_names: Vec<_> = paths
             .iter()
             .filter_map(|path| {
@@ -68,6 +68,13 @@ impl ChieEngine {
                     .map(|relationship| relationship.id.clone())
             })
             .collect();
+        let mut limitations = vec![
+            "Analysis uses bounded static CALLS and IMPORTS relationships.".to_owned(),
+            "Static test declarations are not runtime coverage evidence.".to_owned(),
+        ];
+        if truncated {
+            limitations.push("Impact paths were truncated at the maximum path limit.".to_owned());
+        }
         Ok(ChangeAnalysis {
             context: graph.context.clone(),
             selected_entity_id: selected_entity_id.to_owned(),
@@ -75,10 +82,8 @@ impl ChieEngine {
             test_candidates: candidates,
             risk,
             evidence,
-            limitations: vec![
-                "Analysis uses bounded static CALLS and IMPORTS relationships.".to_owned(),
-                "Static test declarations are not runtime coverage evidence.".to_owned(),
-            ],
+            limitations,
+            truncated,
         })
     }
 }

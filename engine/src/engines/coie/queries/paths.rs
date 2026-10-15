@@ -1,4 +1,4 @@
-use crate::contract::result::MAX_PATH_LENGTH;
+use crate::contract::result::MAX_RELATIONSHIPS;
 use crate::engines::coie::model::GraphRelationship;
 
 pub fn outgoing<'a>(
@@ -19,6 +19,6 @@ pub fn bounded_outgoing<'a>(
         return Vec::new();
     }
     outgoing(relationships, entity_id)
-        .take(MAX_PATH_LENGTH.min(max_depth))
+        .take(MAX_RELATIONSHIPS)
         .collect()
 }

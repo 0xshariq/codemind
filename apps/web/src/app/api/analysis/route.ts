@@ -3,7 +3,9 @@ import { analyzeChange } from "@/lib/server/rust-client/client";
 import { toolInputSchema } from "@/lib/server/tools/schemas";
 
 export async function POST(request: Request) {
-  const parsed = toolInputSchema.safeParse(await request.json());
+  let body: unknown = null;
+  try { body = await request.json(); } catch { body = null; }
+  const parsed = toolInputSchema.safeParse(body);
   if (!parsed.success || !parsed.data.symbolId) {
     return NextResponse.json({ outcome: "invalid", error: "symbolId and complete context are required" }, { status: 400 });
   }

@@ -96,8 +96,16 @@ where
             .map_err(|error| Status::internal(error.to_string()))?;
         Ok(Response::new(QueryResponse {
             result: Some(query_response::Result::Data(generated::CanonicalResult {
-                outcome: generated::Outcome::Success as i32,
-                completeness: generated::Completeness::Complete as i32,
+                outcome: if analysis.truncated {
+                    generated::Outcome::Partial as i32
+                } else {
+                    generated::Outcome::Success as i32
+                },
+                completeness: if analysis.truncated {
+                    generated::Completeness::Truncated as i32
+                } else {
+                    generated::Completeness::Complete as i32
+                },
                 freshness: generated::Freshness::Current as i32,
                 context: Some(generated::RepositoryContext {
                     repository_id: analysis.context.repository_id,

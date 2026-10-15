@@ -5,10 +5,15 @@ import { publishOperation } from "@/lib/server/operations/service";
 import { setOperationResult } from "@/lib/server/operations/service";
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as {
+  let body: {
     question?: unknown;
     toolCalls?: unknown;
   };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return NextResponse.json({ error: "invalid JSON request body" }, { status: 400 });
+  }
   if (typeof body.question !== "string" || body.question.trim().length === 0) {
     return NextResponse.json({ error: "question is required" }, { status: 400 });
   }
@@ -25,17 +30,28 @@ export async function POST(request: Request) {
   publishOperation({ operationId, status: "planning", sequence: 1, message: "Planning investigation" });
   void (async () => {
     try {
-      publishOperation({ operationId, status: "coie", sequence: 2, message: "Collecting canonical code evidence" });
-      publishOperation({ operationId, status: "tie", sequence: 3, message: "Collecting test intelligence" });
-      publishOperation({ operationId, status: "chie", sequence: 4, message: "Computing change impact" });
-      const answer = await investigateChange(createConfiguredProvider(), body.question as string, toolCalls);
-      publishOperation({ operationId, status: "reasoning", sequence: 5, message: "Preparing evidence-grounded response" });
+      let sequence = 1;
+      const answer = await investigateChange(
+        createConfiguredProvider(),
+        body.question as string,
+        toolCalls,
+        (name) => {
+          const stage = name === "get_test_intelligence" ? "tie" : name === "analyze_change" || name === "get_impact" ? "chie" : "coie";
+          sequence += 1;
+          publishOperation({ operationId, status: stage, sequence, message: stage === "coie" ? "Collecting canonical code evidence" : stage === "tie" ? "Collecting test intelligence" : "Computing change impact" });
+        },
+        () => {
+          sequence += 1;
+          publishOperation({ operationId, status: "reasoning", sequence, message: "Preparing evidence-grounded response" });
+        },
+      );
+      sequence += 1;
       setOperationResult(operationId, { answer });
-      publishOperation({ operationId, status: "completed", sequence: 6, message: "Investigation completed" });
+      publishOperation({ operationId, status: "completed", sequence, message: "Investigation completed" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Agent unavailable";
       setOperationResult(operationId, { error: message });
-      publishOperation({ operationId, status: "failed", sequence: 6, message });
+      publishOperation({ operationId, status: "failed", sequence: 3, message });
     }
   })();
   return NextResponse.json({ operationId }, { status: 202 });

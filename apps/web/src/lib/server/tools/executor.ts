@@ -10,7 +10,7 @@ export function createToolExecutor(handler: ToolExecutor): ToolExecutor {
   return async (name, input, sharedState = state) => {
     const tool = getTool(name);
     const parsed: ToolInput = tool.input.parse(input);
-    checkGuardrails(sharedState, `${tool.name}:${JSON.stringify(parsed)}`);
+    checkGuardrails(sharedState, `${tool.name}:${JSON.stringify(parsed)}`, tool.name, tool.maxCalls);
     return handler(tool.name, parsed, sharedState);
   };
 }

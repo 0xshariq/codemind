@@ -554,7 +554,7 @@ Each engine accordion consumes typed progress events. When ChIE publishes the Ch
 
 **Day 2 exit gate**
 
-- [ ] User can choose a repository and a symbol.
+- [x] User can choose a repository and a symbol.
 - [x] User can ask “What could this affect?”
 - [x] LLM tool calls go through the semantic registry.
 - [x] Rust queries FalkorDB for canonical facts.
@@ -562,8 +562,8 @@ Each engine accordion consumes typed progress events. When ChIE publishes the Ch
 - [x] CoIE, TIE and ChIE run through controlled typed engine interfaces.
 - [x] ChIE returns impact, qualitative risk, test candidates, evidence and limitations.
 - [x] Result paths are traceable to actual graph relationships.
-- [ ] Rust, TypeScript/JavaScript and Python all use the same investigation workflow.
-- [ ] The first Track 01 E2E passes.
+- [x] Rust, TypeScript/JavaScript and Python all use the same investigation workflow.
+- [x] The first Track 01 E2E passes.
 
 At this point there must be a credible Track 01 product even before advanced memory is added.
 

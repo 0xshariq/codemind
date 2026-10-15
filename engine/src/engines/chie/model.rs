@@ -43,6 +43,7 @@ pub struct ChangeAnalysis {
     pub risk: RiskLevel,
     pub evidence: Vec<String>,
     pub limitations: Vec<String>,
+    pub truncated: bool,
 }
 
 pub fn traversable(kind: RelationshipKind) -> bool {

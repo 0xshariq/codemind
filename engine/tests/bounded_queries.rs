@@ -53,5 +53,5 @@ fn path_depth_zero_is_empty_and_positive_depth_is_bounded() {
         relationship(context, "two", "source"),
     ];
     assert!(paths::bounded_outgoing(&facts, "source", 0).is_empty());
-    assert_eq!(paths::bounded_outgoing(&facts, "source", 1).len(), 1);
+    assert_eq!(paths::bounded_outgoing(&facts, "source", 1).len(), 2);
 }
