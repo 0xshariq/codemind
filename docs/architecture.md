@@ -2,7 +2,7 @@
 
 > **Hackathon scope only**
 >
-> This document is the implementation architecture for the CodeMind
+> This document defines the system architecture for the CodeMind
 > submission to Graph Hacks: Context for AI Agents, powered by FalkorDB.
 >
 > It intentionally describes the **frozen hackathon architecture**, not
@@ -533,7 +533,7 @@ Validated environment/configuration loading.
 Protobuf is the transport contract between the Agent Runtime and Rust.
 
 ``` text
-proto/codemind/v1/
+proto/v1/
 ```
 
 is the source of truth.
@@ -1081,7 +1081,7 @@ The broader logical TIE catalog includes:
 ``` text
 Test
 TestSuite
-Fixture
+TestDataSet
 TestCase
 TestRun
 TestExecution
@@ -1111,7 +1111,7 @@ DECLARED_BY
 TARGETS
 EXERCISES
 COVERS
-USES_FIXTURE
+USES_TEST_DATASET
 DEPENDS_ON
 BELONGS_TO
 ```
@@ -2821,8 +2821,8 @@ to source/provenance.
 
 This avoids turning FalkorDB into a source-code blob store.
 
-For the hackathon, the repository provider and controlled fixtures
-provide deterministic source inputs.
+For the hackathon, the repository provider accepts developer-supplied source inputs.
+The core product does not depend on a predefined repository input.
 
 ------------------------------------------------------------------------
 
@@ -2844,11 +2844,11 @@ Conceptually:
 
 The hackathon path primarily uses:
 
--   the bundled demo fixture,
+-   a developer-supplied local repository,
 -   bounded public GitHub repository import where implemented.
 
 Local repository support is a product workflow consideration, but the
-guaranteed demo path remains the controlled fixture.
+the reliable demo path uses the same real application pipeline as normal repository input.
 
 ------------------------------------------------------------------------
 
@@ -3423,176 +3423,26 @@ This keeps the product deterministic and testable.
 
 ------------------------------------------------------------------------
 
-# 78. Project Structure
+# 80. Repository Input Model
 
-The canonical physical layout is defined in full in the root
-`implementation-plan.md`. Both documents use the same Next.js `src/`
-layout; there is no parallel `apps/web/app/` or `apps/web/components/`
-tree.
+CodeMind operates on a developer-supplied repository or source snapshot. The
+repository is an input to the indexing and investigation pipeline, not a
+predefined product dataset.
 
-```text
-codemind/
-├── AGENTS.md
-├── README.md
-├── implementation-plan.md
-├── package.json
-├── pnpm-workspace.yaml
-├── playwright.config.ts
-├── .env.example
-├── docker-compose.yml
-├── apps/web/
-│   ├── package.json                  # flat + @toon-format/toon dependencies
-│   └── src/
-│       ├── app/                      # pages + Route Handlers
-│       ├── components/               # chat/search, execution, analysis, graph, evidence, memory, repository, settings, common
-│       └── lib/
-│           ├── shared/                # UI-safe types/status
-│           └── server/
-│               ├── agent/
-│               ├── tools/             # registry, schemas, executor, guardrails, implementations
-│               ├── workflows/
-│               ├── memory/
-│               ├── handoffs/
-│               ├── operations/
-│               ├── results/
-│               │   ├── canonical-json.ts
-│               │   ├── validate.ts
-│               │   ├── llm-projection.ts
-│               │   ├── llm-encoding.ts  # flat → TOON, shared by JS tools
-│               │   ├── llm-encoding.test.ts
-│               │   └── ui-projection.ts
-│               ├── rust-client/        # gRPC client + generated bindings
-│               ├── auth/
-│               └── config/
-├── proto/codemind/v1/                 # canonical Protobuf source
-├── rust/crates/codemind-engine/
-│   ├── src/                           # CoIE, TIE, ChIE, contracts, storage, lifecycle
-│   └── tests/
-├── fixtures/repositories/codemind-polyglot-demo/
-│   ├── rust/
-│   ├── typescript/
-│   └── python/
-├── tests/
-│   ├── e2e/
-│   ├── language-adapters/
-│   ├── graph-conformance/
-│   ├── memory/
-│   └── fixtures/expected-graph/
-├── docs/
-│   ├── architecture.md
-│   ├── testing.md
-│   ├── design-system.md
-│   ├── demo.md
-│   ├── graph-model.md
-│   ├── language-support.md
-│   └── graph-queries.md
-└── scripts/
-    ├── setup.sh
-    ├── generate-proto.sh
-    ├── seed-demo.sh
-    ├── reset-demo.sh
-    ├── run-e2e.sh
-    └── verify-clean-start.sh
-```
+The source-input model must support:
 
-The dependency rule remains one-way: browser → Next.js application /
-server-side Agent Runtime → gRPC/Protobuf → Rust engine → graph-storage
-port → FalkorDB. The packages `flat` and `@toon-format/toon` run only in
-server-side JavaScript result formatting; they are not used in Rust or the
-browser.
+- Rust, JavaScript/TypeScript, and Python in the hackathon MVP;
+- deterministic snapshot provenance;
+- source locations and structural evidence;
+- supported and unsupported constructs being represented honestly;
+- isolated repository/workspace boundaries.
 
-------------------------------------------------------------------------
+For testing and recording, controlled local source trees may be created or
+selected as test/demo inputs. They are test inputs, not a required product
+repository-data directory and must not create a special application execution
+path.
 
-# 79. Development Topology
-
-The normal hackathon development environment uses three primary
-processes:
-
-``` text
-Process 1
-FalkorDB
-Docker
-
-Process 2
-Rust CodeMind Engine
-cargo run
-
-Process 3
-Next.js
-pnpm dev
-```
-
-Runtime topology:
-
-``` text
-Browser
-   │
-   │ HTTP / SSE
-   ▼
-Next.js + Agent Runtime
-   │
-   │ gRPC
-   ▼
-Rust CodeMind Engine
-   │
-   │ graph storage port
-   ▼
-FalkorDB
-```
-
-Docker Compose provides the graph infrastructure.
-
-Persistent FalkorDB data is retained for the demo.
-
-------------------------------------------------------------------------
-
-# 80. Fixtures and Polyglot Demo
-
-The hackathon includes a controlled fixture repository under:
-
-``` text
-fixtures/repositories/
-```
-
-The primary proof includes:
-
-``` text
-Rust
-TypeScript / JavaScript
-Python
-```
-
-The fixture must contain enough real relationships and tests to
-demonstrate:
-
--   code graph construction,
--   cross-language adapter conformance,
--   test graph construction,
--   change-impact traversal,
--   evidence,
--   recommendations,
--   memory/handoff behavior.
-
-The demo uses the same real application pipeline as normal use.
-
-There is no separate fake demo UI.
-
-The final submission must also preserve these judge-facing constraints:
-
-- The public repository is mandatory.
-- Live deployment is preferred only when reliable; reliable local execution is
-  the fallback.
-- The bundled fixture is the guaranteed offline demo path and must not depend
-  on GitHub or another external network service.
-- The final submission explicitly discloses the use of AI coding assistance.
-- The approximately three-minute demo is one coherent story: product first,
-  Rust hero investigation, real FalkorDB graph work and evidence, Track 02
-  handoff/fresh-session memory, then the TypeScript/JavaScript and Python proof.
-- The architecture is explained with one concise diagram, while the graph
-  model and important Cypher queries/graph algorithms are documented in the
-  repository documentation.
-
-------------------------------------------------------------------------
+---
 
 # 81. Repository Preparation Workflow
 

@@ -1,7 +1,7 @@
 # CodeMind Testing Plan
 
 **Scope:** Graph Hacks: Context for AI Agents, powered by FalkorDB  
-**Primary purpose:** The authoritative testing plan for CodeMind's four-day hackathon implementation, with a detailed Day 4 verification procedure  
+**Primary purpose:** The authoritative Day 4 verification and go/no-go plan for CodeMind. Tests are written alongside implementation on Days 1–3 and executed as part of this final verification.  
 **Core test principle:** Verify canonical facts, graph relationships, evidence, lifecycle, persistence and recovery. Do not use exact LLM wording as the primary correctness assertion.
 
 > **Day 4 is not the day to write the test suite from scratch.** Tests are added alongside implementation on Days 1–3. Day 4 freezes features and executes the complete verification sequence, repairs failures, rehearses both tracks and validates the submission from a clean start.
@@ -33,7 +33,7 @@ The test suite must establish that:
 - Memory survives a fresh session and never silently overrides current engine evidence.
 - A persisted handoff is retrieved and consumed by a receiving stage; it is not merely passed in memory.
 - The chat UI renders known structured components for complete, partial, truncated, empty, failed, disconnected and recovered states.
-- The central demo works using bundled fixtures without relying on public GitHub or internet availability.
+- The central demo works from a clean local repository/source-input path without requiring public GitHub or internet availability.
 
 ---
 
@@ -81,7 +81,7 @@ Do **not** require the LLM to use the exact same words in each run. It is accept
 
 ## 2.4 Deterministic tests first
 
-Use the bundled fixtures, a known graph seed, expected-graph assertions and controlled service failures. Network-dependent tests are optional diagnostics and must not gate the offline core workflow.
+Use the controlled local test inputs, a known graph seed, expected-graph assertions and controlled service failures. Network-dependent tests are optional diagnostics and must not gate the offline core workflow.
 
 ## 2.5 The graph must do real work
 
@@ -124,7 +124,7 @@ The monorepo uses tests at both Rust-crate and top-level cross-system layers.
 
 ## 3.1 Rust unit/component tests
 
-Location: inline Rust unit tests and the `rust/crates/codemind-engine/tests/` integration test directory.
+Location: inline Rust unit tests and the `engine/tests/` integration test directory.
 
 Required focus:
 
@@ -143,7 +143,7 @@ Required focus:
 Location:
 
 ```text
-tests/language-adapters/
+apps/web/src/tests/language-adapters/
 ├── rust-adapter.spec.ts
 ├── typescript-adapter.spec.ts
 └── python-adapter.spec.ts
@@ -156,7 +156,7 @@ All initial language adapters must produce the same canonical semantics for equi
 Location:
 
 ```text
-tests/graph-conformance/
+apps/web/src/tests/graph-conformance/
 ├── canonical-model.spec.ts
 ├── relationship-semantics.spec.ts
 └── snapshot-isolation.spec.ts
@@ -169,7 +169,7 @@ This suite verifies canonical entity and connector semantics independent of the 
 Location:
 
 ```text
-tests/memory/
+apps/web/src/tests/memory/
 ├── persistence.spec.ts
 ├── handoff.spec.ts
 └── scope-isolation.spec.ts
@@ -182,7 +182,7 @@ This suite tests persistence and coordination across sessions/restarts, not mere
 Location:
 
 ```text
-tests/e2e/
+apps/web/src/tests/e2e/
 ├── track01.spec.ts
 ├── track02.spec.ts
 ├── polyglot-workflow.spec.ts
@@ -194,7 +194,7 @@ These tests exercise the actual application boundaries and real FalkorDB behavio
 ## 3.6 Suggested supporting Rust integration suite
 
 ```text
-rust/crates/codemind-engine/tests/
+engine/tests/
 ├── canonical_graph.rs
 ├── language_adapters.rs
 ├── falkordb_integration.rs
@@ -251,18 +251,18 @@ The three main runtime processes are:
 
 There must not be a test-only direct data path from the browser to FalkorDB.
 
-## 4.2 Use the bundled polyglot fixture
+## 4.2 Use controlled polyglot test inputs
 
-Canonical fixture root:
+Test-input source trees are created or selected by the test harness; there is no required product-level repository fixture.
 
 ```text
-fixtures/repositories/codemind-polyglot-demo/
+temporary test repositories/source trees created by the test harness
 ├── rust/
 ├── typescript/
 └── python/
 ```
 
-Each language fixture must include:
+Each language test input must include:
 
 - files and declarations,
 - supported structural relationships,
@@ -275,7 +275,7 @@ The three subprojects demonstrate the same semantic investigation flow. Do not i
 
 ## 4.3 Expected graph assertions
 
-Expected graph data under `tests/fixtures/expected-graph/` should assert source-supported facts, including:
+Expected graph data under `tests/apps/web/src/tests/graph-conformance/expected/` should assert source-supported facts, including:
 
 - canonical entity kind,
 - repository-relative path,
@@ -309,14 +309,14 @@ CoIE owns canonical code/repository facts and the Code Graph. The purpose of the
 
 | ID | Test | Expected result |
 |---|---|---|
-| COIE-001 | Ingest an unchanged fixture twice | Same canonical entities and relationships; no duplicates |
+| COIE-001 | Ingest an unchanged controlled test input twice | Same canonical entities and relationships; no duplicates |
 | COIE-002 | Resolve the same repository snapshot twice | Stable repository/snapshot identity |
 | COIE-003 | Ingest two distinct snapshots | Snapshot provenance is not silently mixed |
 | COIE-004 | Inventory nested directories/files | Repository-relative paths and containment are correct |
 | COIE-005 | Include unsupported file syntax | Unsupported diagnostic; no fabricated symbols/edges |
 | COIE-006 | Fail parsing one supported file | Honest partial/degraded outcome if other valid graph data is retained |
 | COIE-007 | Query source evidence for a symbol | Correct file, snapshot and source range when available |
-| COIE-008 | Re-index a changed fixture snapshot | New snapshot context is distinguishable from the old one |
+| COIE-008 | Re-index a changed controlled test input snapshot | New snapshot context is distinguishable from the old one |
 | COIE-009 | Remove or invalidate stale source facts in an updated graph | Old relationships are not presented as current snapshot truth |
 | COIE-010 | Query beyond an allowed result/depth limit | Result states truncation and retains the correct context |
 
@@ -353,7 +353,7 @@ INHERITS_FROM
 OVERRIDES
 ```
 
-For each connector emitted by the fixture:
+For each connector emitted by the controlled test input:
 
 1. verify both endpoints exist;
 2. verify source and target orientation;
@@ -404,10 +404,10 @@ Each language adapter is tested independently first, then through the shared app
 
 ## 6.1 Shared conformance contract
 
-For each fixture language, test this same path:
+For each supported-language test input, test this same path:
 
 ```text
-source fixture
+source test input
     ↓
 language adapter
     ↓
@@ -467,7 +467,7 @@ Required assertions:
 
 ## 6.6 Cross-language conformance checks
 
-The semantically equivalent fixture components need not have identical source lines or native syntax, but the contract assertions should align on:
+The semantically equivalent test-input components need not have identical source lines or native syntax, but the contract assertions should align on:
 
 - canonical entity semantics,
 - containment/definition,
@@ -486,7 +486,7 @@ TIE owns the Test Graph. It supplies test facts and evidence; it does not decide
 
 ## 7.1 Static discovery
 
-Verify that TIE discovers supported test declarations in each language fixture:
+Verify that TIE discovers supported test declarations in each language test input:
 
 - Rust native test harness,
 - a supported subset of Jest/Vitest for JavaScript/TypeScript,
@@ -554,7 +554,7 @@ ChIE owns change-specific analysis and the Change Graph. Its findings must be de
 
 ## 8.1 Direct and indirect impact
 
-Given a deterministic graph fixture:
+Given a deterministic graph built from controlled source input:
 
 ```text
 Selected Symbol
@@ -701,7 +701,7 @@ FalkorDB must be tested as a real dependency, not only mocked.
 
 Test that:
 
-1. the fixture ingestion writes canonical entities and relationships;
+1. the controlled-source ingestion writes canonical entities and relationships;
 2. a separate Rust query reads them back;
 3. the read result matches canonical expectations;
 4. a process restart does not lose data when the persistent volume is intended to retain it;
@@ -734,7 +734,7 @@ Expected:
 
 ## 9.4 Real graph traversal proof
 
-Create/seed a known connected chain from actual fixture source. Query from the selected symbol through FalkorDB.
+Create/seed a known connected chain from actual test-input source. Query from the selected symbol through FalkorDB.
 
 Verify that:
 
@@ -941,7 +941,7 @@ Verify:
 - existing canonical graph data remains valid;
 - an LLM failure is not reported as a FalkorDB or Rust failure unless that component actually failed;
 - the UI does not render fabricated final findings;
-- the bundled data path remains available for the local fallback demo.
+- the selected local data path remains available for the local fallback demo.
 
 ## 11.7 Type B LLM-result encoding: `flat` → TOON
 
@@ -1443,12 +1443,12 @@ The following are the core hackathon E2E tests. They must run through the applic
 
 **Purpose:** Prove the complete connected-data analysis path.
 
-**Setup:** Clean fixture workspace, Rust source fixture ingested into FalkorDB, known symbol and test relationships available.
+**Setup:** Clean controlled-input workspace, Rust source test input ingested into FalkorDB, known symbol and test relationships available.
 
 **Steps:**
 
 1. Open CodeMind.
-2. Open the bundled polyglot workspace.
+2. Open the selected local polyglot workspace.
 3. Select the known Rust symbol.
 4. Ask: **“What could this change affect?”**
 5. Observe LLM planning/tool selection.
@@ -1475,7 +1475,7 @@ The following are the core hackathon E2E tests. They must run through the applic
 
 ## 16.2 E2E-02 — TypeScript/JavaScript Track 01 investigation
 
-Repeat E2E-01 against the TypeScript/JavaScript fixture.
+Repeat E2E-01 against the selected TypeScript/JavaScript source input.
 
 **Expected:**
 
@@ -1483,11 +1483,11 @@ Repeat E2E-01 against the TypeScript/JavaScript fixture.
 - the canonical entity/relationship contract is equivalent where the source supports equivalent constructs;
 - supported Jest/Vitest-style test candidates are discovered;
 - all result/evidence/context assertions pass;
-- no relationships are copied from the Rust fixture or hardcoded to make the result look identical.
+- no relationships are copied from the Rust source input or hardcoded to make the result look identical.
 
 ## 16.3 E2E-03 — Python Track 01 investigation
 
-Repeat E2E-01 against the Python fixture.
+Repeat E2E-01 against the selected Python source input.
 
 **Expected:**
 
@@ -1503,7 +1503,7 @@ Repeat E2E-01 against the Python fixture.
 
 **Steps:**
 
-1. Run a known fixture investigation and record its canonical path/impact.
+1. Run a known controlled-source investigation and record its canonical path/impact.
 2. In an isolated test graph, remove or disable one relationship required for that path, or use a second controlled fixture variant without that edge.
 3. Repeat the exact semantic query.
 4. Compare the canonical result and evidence path.
@@ -1592,7 +1592,7 @@ Verify:
 
 1. Disable/deny external network access or use a controlled environment where the external provider is unavailable.
 2. Start FalkorDB, Rust and Next.js locally.
-3. Open the bundled polyglot fixture.
+3. Open the selected local polyglot workspace.
 4. Run the preloaded graph preparation/investigation route that is supported by the implementation.
 5. Confirm graph-backed impact and evidence can be shown without fetching a new repository.
 
@@ -1601,7 +1601,7 @@ Verify:
 - no public GitHub access is required for the core demo;
 - no mock impact response is substituted;
 - if LLM reasoning is unavailable, the UI distinguishes that failure from successful graph work instead of fabricating a full final answer;
-- use a preloaded fixture as actual input data, not prewritten final results.
+- use a preloaded controlled test input as actual input data, not prewritten final results.
 
 ---
 
@@ -1611,7 +1611,7 @@ Day 4 must deliberately exercise failure paths. Do not merely infer them from pa
 
 | ID | Scenario | Test action | Required behavior |
 |---|---|---|---|
-| FAIL-01 | No internet | Disable external connectivity | Bundled fixture path remains available; external import fails honestly |
+| FAIL-01 | No internet | Disable external connectivity | Local controlled test input path remains available; external import fails honestly |
 | FAIL-02 | Public repository not found | Submit a known invalid/nonexistent public URL in a controlled test | Clear repository-not-found/access error; no graph marked ready |
 | FAIL-03 | Repository access denied | Use an inaccessible repository/authorization fixture | Access denied; do not expose protected content |
 | FAIL-04 | Invalid URL | Submit malformed URL and disallowed scheme/host form | Reject before source acquisition; no arbitrary fetch |
@@ -1619,7 +1619,7 @@ Day 4 must deliberately exercise failure paths. Do not merely infer them from pa
 | FAIL-06 | FalkorDB unavailable | Stop or isolate the database in a controlled test | Graph operations fail safely; no false success |
 | FAIL-07 | LLM provider failure | Use invalid test credentials or a controlled provider failure | Explanation failure is distinct from successful/failed graph processing |
 | FAIL-08 | Partial indexing | Inject a file parsing/extraction failure | Partial/degraded status and diagnostic; surviving facts remain valid |
-| FAIL-09 | Unresolved relationship | Use the unresolved fixture edge | Preserve unresolved status and limitation; do not fabricate an edge |
+| FAIL-09 | Unresolved relationship | Use the unresolved controlled test-input edge | Preserve unresolved status and limitation; do not fabricate an edge |
 | FAIL-10 | Unsupported syntax | Use a construct outside the declared adapter subset | Explicit unsupported diagnostic; no fabricated graph fact |
 | FAIL-11 | Traversal limit | Lower test-only bound to force truncation | Result marked truncated/partial; no complete claim |
 | FAIL-12 | Tool timeout | Force a timeout in a test tool/RPC | Safe timeout result; valid prior findings retained |
@@ -1628,7 +1628,7 @@ Day 4 must deliberately exercise failure paths. Do not merely infer them from pa
 | FAIL-15 | Unauthorized repository/tool call | Bind operation to workspace A and request B | Denied; no B data returned |
 | FAIL-16 | Arbitrary Cypher attempt | Attempt to call a non-existent raw-query tool or inject a graph query into input | No database bypass; only registered semantic tools run |
 | FAIL-17 | Arbitrary shell execution attempt | Put command-like instructions in a user prompt or source file | No arbitrary repository command is executed |
-| FAIL-18 | Secret in source/prompt | Add test secret fixture to content | Secret is not copied into persistent memory or unsafe browser diagnostics |
+| FAIL-18 | Secret in source/prompt | Add controlled secret test input to content | Secret is not copied into persistent memory or unsafe browser diagnostics |
 | FAIL-19 | Browser/SSE disconnect | Disconnect during a running operation | Operation continues independently; UI can reconnect |
 | FAIL-20 | Duplicate progress event | Replay the same event ID/sequence | UI state does not regress or duplicate the visible stage |
 | FAIL-21 | Out-of-order progress event | Deliver stale lower-sequence event after a newer one | Latest authoritative state remains visible |
@@ -1663,7 +1663,7 @@ Before running tests:
 - [ ] Confirm `AGENTS.md`, `architecture.md`, `implementation-plan.md`, `testing.md`, `design-system.md` and `demo.md` refer to the same architecture/scope.
 - [ ] Confirm there are no known uncommitted changes that could invalidate the test record.
 - [ ] Confirm `.env.example` contains names/placeholders only, not real secrets.
-- [ ] Confirm the demo fixture and expected graph data are version controlled.
+- [ ] Confirm the controlled demo/test inputs and expected graph data are version controlled.
 - [ ] Record any already-known limitation; do not conceal it during the final run.
 
 **Output:** A clear candidate version and a known limitation list.
@@ -1711,25 +1711,25 @@ The final root scripts should provide repeatable wrappers. If a wrapper is missi
 - [ ] Canonical graph tests pass.
 - [ ] Memory/handoff unit tests pass.
 
-## Phase 3 — Reset and seed a known graph fixture
+## Phase 3 — Reset and seed a known controlled graph
 
 1. Use the explicit test/demo reset path only where required.
-2. Seed the bundled polyglot repository.
+2. Seed the selected local polyglot test repository.
 3. Run CoIE extraction and graph persistence.
 4. Run TIE static test discovery and supported test mappings.
 5. Verify graph data in FalkorDB using the supported Rust semantic query path.
-6. Save/log the fixture snapshot ID and graph versions used for subsequent tests.
+6. Save/log the test-input snapshot ID and graph versions used for subsequent tests.
 
 Checklist:
 
-- [ ] Rust fixture entities and relationships match expected source assertions.
-- [ ] TypeScript/JavaScript fixture entities and relationships match expected source assertions.
-- [ ] Python fixture entities and relationships match expected source assertions.
+- [ ] Rust source input entities and relationships match expected source assertions.
+- [ ] TypeScript/JavaScript source input entities and relationships match expected source assertions.
+- [ ] Python source input entities and relationships match expected source assertions.
 - [ ] Supported tests are discovered.
 - [ ] `TARGETS` is not treated as `COVERS` or `EXERCISES`.
 - [ ] Unresolved/unsupported fixture cases stay qualified.
 - [ ] Repeating ingestion does not create duplicate canonical graph facts.
-- [ ] No fixture result is hardcoded into the UI.
+- [ ] No test-input result is hardcoded into the UI.
 
 ## Phase 4 — Complete three-language end-to-end investigation
 
@@ -1758,7 +1758,7 @@ Run the equivalent journey on the TypeScript fixture.
 
 ### Python
 
-Run the equivalent journey on the Python fixture.
+Run the equivalent journey on the Python source input.
 
 For each run:
 
@@ -1795,7 +1795,7 @@ Use the exact planned story:
 ```text
 Open CodeMind
   ↓
-open bundled polyglot workspace
+open selected local polyglot workspace
   ↓
 select Rust symbol
   ↓
@@ -1917,7 +1917,7 @@ Record actual measured results for:
 Do not invent target values after seeing results. First confirm that:
 
 - no call hangs indefinitely;
-- traversal/result bounds hold on a larger fixture;
+- traversal/result bounds hold on a larger controlled source input;
 - the chat UI receives progress promptly enough to understand the stage;
 - the final investigation finishes reliably enough for the planned demo;
 - repeat runs do not degrade due to duplicate state.
@@ -1926,7 +1926,7 @@ If performance is not adequate, fix a measured bottleneck or cut an optional fea
 
 ## Phase 11 — Demo and submission verification
 
-- [ ] Reset to the known presentation state without deleting required fixture source.
+- [ ] Reset to the known presentation state without deleting required source input.
 - [ ] Confirm the local/offline demo path starts from a clean checkout.
 - [ ] Rehearse the approximately three-minute Track 01 + Track 02 storyline.
 - [ ] Confirm graph evidence and the query/path used in the demo are documented.
@@ -1936,7 +1936,7 @@ If performance is not adequate, fix a measured bottleneck or cut an optional fea
 - [ ] Confirm public source repository access.
 - [ ] Record the final demo video.
 - [ ] Verify video playback and that it shows the actual product.
-- [ ] Confirm the demo's counts/findings are sourced from fixture/engine results.
+- [ ] Confirm the demo's counts/findings are sourced from source-input/engine results.
 - [ ] Freeze the submission candidate after the last successful run.
 
 ---

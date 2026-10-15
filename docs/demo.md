@@ -38,7 +38,7 @@ Do not select Track 03 unless the team deliberately changes scope and builds a r
 
 - **Show FalkorDB doing real work.** Demonstrate a real graph-backed result and an evidence path, and include a compact proof that changing a relevant persisted relationship changes the canonical result.
 - **Show the working product.** Capture the actual user interface and real operation events. Avoid a slide deck that merely describes what would happen.
-- **Use permitted data.** Default to the bundled synthetic `codemind-polyglot-demo` fixture, which is the deterministic offline path. If another repository is used, confirm that its source and contents are public or otherwise permitted before ingesting it.
+- **Use permitted data.** Use a permitted local demo repository/source tree prepared for the recording. It must be deterministic and locally available; it is a demo input, not a bundled product fixture. If another repository is used, confirm that its source and contents are public or otherwise permitted before ingesting it.
 - **Keep the repository inspectable.** The recorded workflow must correspond to the implementation and source in the submitted public repository.
 - **Disclose AI assistance.** Include the required disclosure in the repository README or submission materials. Do not imply that the implementation was produced without assistance if it was not.
 - **Make local execution reproducible.** If a stable live deployment is not available, show enough of the real local workflow and provide complete setup instructions in the README.
@@ -80,10 +80,10 @@ Before recording, confirm all of the following:
 
 - [ ] A clean start works using the documented setup.
 - [ ] FalkorDB is running and its persistent graph can be inspected.
-- [ ] The bundled polyglot fixture loads deterministically without relying on public-network access.
+- [ ] The selected local polyglot test/demo input loads deterministically without relying on public-network access.
 - [ ] Rust, TypeScript/JavaScript, and Python investigations pass their relevant end-to-end tests.
 - [ ] The chosen main investigation produces a genuine multi-hop path in FalkorDB.
-- [ ] The chosen result distinguishes direct and indirect impact where supported by the fixture.
+- [ ] The chosen result distinguishes direct and indirect impact where supported by the selected source input.
 - [ ] Test candidates come from the real TIE graph/evidence. Do not imply runtime test execution; MVP test discovery is static.
 - [ ] Risk is presented using supported qualitative factors/tier, not an invented numeric percentage.
 - [ ] The visible impact path links to actual evidence and the correct repository/snapshot or graph version.
@@ -106,18 +106,18 @@ If Track 02 fails its gate, do not quietly simulate it. Fix the implementation o
 
 ### 5.1 Preferred environment
 
-Use the bundled polyglot fixture at:
+Use the selected local demo repository/source tree at:
 
 ```text
-fixtures/repositories/codemind-polyglot-demo/
-├── rust/
-├── typescript/
-└── python/
+<selected local demo repository>/
+├── Rust source (when selected)
+├── TypeScript/JavaScript source (when selected)
+└── Python source (when selected)
 ```
 
-This fixture is preferred because it is deterministic, permitted, locally available, and aligned with the three-language conformance plan. It avoids making the central demo depend on GitHub availability or network access. Do not fabricate a shared dependency chain across languages; each language subproject must demonstrate its own source-supported relationships.
+This local source input is preferred because it is deterministic, permitted, locally available, and aligned with the three-language conformance plan. It avoids making the central demo depend on GitHub availability or network access. Do not fabricate a shared dependency chain across languages; each language subproject must demonstrate its own source-supported relationships.
 
-For the main short story, pick **one language and one symbol with the clearest verified multi-hop path**. Prefer the Rust fixture for the hero scenario, as planned in the final discussion, provided its path is actually supported by the checked-in source and passing E2E tests. If TypeScript/JavaScript or Python has a clearer verified path, choose that instead and still verify the remaining adapters separately. Never invent a fixture symbol or dependency chain.
+For the main short story, pick **one language and one symbol with the clearest verified multi-hop path**. Prefer the Rust source input for the hero scenario, as planned in the final discussion, provided its path is actually supported by the checked-in source and passing E2E tests. If TypeScript/JavaScript or Python has a clearer verified path, choose that instead and still verify the remaining adapters separately. Never invent a source-input symbol or dependency chain.
 
 ### 5.2 Processes
 
@@ -131,14 +131,14 @@ Do not introduce a second Express service or a separately deployed Agent Runtime
 
 ### 5.3 Prepare before capture
 
-- [ ] Use a clean browser profile or a demo account with only safe fixture data.
+- [ ] Use a clean browser profile or a demo account with only safe controlled demo data.
 - [ ] Close unrelated tabs, notification popups, terminals, and applications.
 - [ ] Increase UI/browser zoom enough for small labels and evidence paths to be legible at video resolution.
 - [ ] Confirm the microphone is clear and the desktop capture does not expose credentials.
 - [ ] Confirm the repository graph is seeded and the target symbol is easy to select.
-- [ ] Prepare a disposable isolated graph/fixture variant for the graph-dependency proof. Never mutate the main demo graph destructively during a single take.
+- [ ] Prepare a disposable isolated graph/isolated source variant for the graph-dependency proof. Never mutate the main demo graph destructively during a single take.
 - [ ] Prepare a fresh-session route that proves persistence without using browser-local state or hidden prompt replay. Prefer a genuinely new conversation/session; restart a process as well if the acceptance test requires it.
-- [ ] Ensure current graph/snapshot details shown in the UI belong to the selected fixture.
+- [ ] Ensure current graph/snapshot details shown in the UI belong to the selected source input.
 - [ ] Keep a known-good seed/reset command ready, but do not display secrets or destructive reset options in the final capture.
 - [ ] Verify actual terminal commands against the scripts in the final repository. Do not rely on commands that exist only in this plan.
 
@@ -147,7 +147,7 @@ Do not introduce a second Express service or a separately deployed Agent Runtime
 The capture should follow the natural user workflow:
 
 1. Home/chat entry.
-2. Select or open the bundled workspace.
+2. Select or open the selected local workspace.
 3. Ask a natural-language change question.
 4. Watch the real operation timeline.
 5. Review Summary / Impact Analysis / Test Impact / Evidence.
@@ -170,7 +170,7 @@ The main video should be one connected story, not a tour of pages. Keep the resu
 
 ### 0:00–0:12 — Hook: define the problem
 
-**On screen:** CodeMind's chat-first home and the bundled demo workspace.
+**On screen:** CodeMind's chat-first home and the selected local demo workspace.
 
 **Narration:**
 
@@ -182,11 +182,11 @@ Open the prepared workspace and select the actual tested symbol. Submit:
 
 > **“What could this change affect?”**
 
-When useful, expand it to: “If I change `[ACTUAL_FIXTURE_SYMBOL]`, what could be affected, which tests should I review, and what evidence supports your answer?” Replace the placeholder before recording.
+When useful, expand it to: “If I change `[ACTUAL_SYMBOL]`, what could be affected, which tests should I review, and what evidence supports your answer?” Replace the placeholder before recording.
 
 **Narration:**
 
-> “I am using the bundled fixture so this investigation is repeatable offline. CodeMind resolves a real symbol and starts the same analysis pipeline used by the application.”
+> “I am using the selected local demo repository so this investigation is repeatable offline. CodeMind resolves a real symbol and starts the same analysis pipeline used by the application.”
 
 Show the selected repository, snapshot/context, and symbol so the query is visibly bound to actual source.
 
@@ -220,7 +220,7 @@ Expand one verified path from the selected symbol to an affected entity or test 
 
 ### 1:30–1:45 — Prove FalkorDB materially changes the answer
 
-Show a real persisted graph relationship/path, then a controlled rerun in an isolated graph or fixture variant after removing/disabling one edge required by that path. Show the canonical result/path changing or becoming honestly unresolved/incomplete. Never mutate the primary presentation graph destructively.
+Show a real persisted graph relationship/path, then a controlled rerun in an isolated graph or isolated source variant after removing/disabling one edge required by that path. Show the canonical result/path changing or becoming honestly unresolved/incomplete. Never mutate the primary presentation graph destructively.
 
 **Narration:**
 
@@ -240,7 +240,7 @@ Show the actual persisted review episode/finding and structured handoff. Include
 
 Open a genuinely new conversation/session and ask a related follow-up, for example:
 
-> “Continue the review of `[ACTUAL_FIXTURE_SYMBOL]`. What previous context still applies, and what should I verify now?”
+> “Continue the review of `[ACTUAL_SYMBOL]`. What previous context still applies, and what should I verify now?”
 
 Show the receiving stage retrieving and consuming the persisted handoff from storage, then retrieving authorized memory and checking applicability/freshness against the current graph or snapshot. If the UI/test fixture supports it, briefly show a second previously validated memory that is now **stale** because the graph/snapshot changed; make clear it is retained as historical context but does not override current facts. Keep this stale record in a separate controlled fixture/graph variant so the positive memory path remains repeatable. If a stale-memory UI proof is not implemented and tested, do not stage it; use the verified positive flow and keep the stale case as a secondary proof clip only after it passes.
 
@@ -260,7 +260,7 @@ Return to the current finding and evidence path. Keep a clear distinction betwee
 
 ### 2:40–2:48 — Three-language proof
 
-Use a quick, readable montage of actual completed investigations against the bundled Rust, TypeScript/JavaScript, and Python fixtures. Show the real workspace/language and actual result entry for each. Do not imply cross-language calls or edges unless the graph contains source-supported links.
+Use a quick, readable montage of actual completed investigations against the the selected Rust, TypeScript/JavaScript, and Python source inputs. Show the real workspace/language and actual result entry for each. Do not imply cross-language calls or edges unless the graph contains source-supported links.
 
 **Narration:**
 
@@ -282,13 +282,13 @@ Do not finish on an error, spinner, empty page, unsupported deployment claim, or
 
 ## 7. Optional expanded language-coverage montage
 
-The primary video already includes a brief 5–8 second three-language proof. For judge follow-up or a longer allowed cut, prepare an **expanded montage** showing the same investigation question running against each bundled language fixture:
+The primary video already includes a brief 5–8 second three-language proof. For judge follow-up or a longer allowed cut, prepare an **expanded montage** showing the same investigation question running against each selected language source input:
 
 - Rust.
 - TypeScript/JavaScript.
 - Python.
 
-For each, show the real selected workspace/language and the real result entry. Do not imply that cross-language calls or relationships exist unless the fixture source and graph actually support them. The montage complements the detailed primary investigation; it does not replace the three end-to-end tests.
+For each, show the real selected workspace/language and the real result entry. Do not imply that cross-language calls or relationships exist unless the source input and graph actually support them. The montage complements the detailed primary investigation; it does not replace the three end-to-end tests.
 
 If adding this montage pushes the video beyond the time allowed by the final form, omit the montage. Preserve the graph-dependency proof and Track 02 fresh-session proof first.
 
@@ -320,7 +320,7 @@ If this is particularly easy to demonstrate, show that memory for one workspace/
 
 ### 8.5 Stale-memory proof
 
-Using the isolated, tested fixture variant, show a previously validated memory becoming stale after its referenced snapshot or relationship changes. Show the explicit freshness/applicability label and the current graph-backed result that takes precedence. Do not create a fake stale badge by editing UI state or changing only the display text. Keep this clip ready even if the short primary video can only show the positive cross-session retrieval path.
+Using the isolated, tested isolated source variant, show a previously validated memory becoming stale after its referenced snapshot or relationship changes. Show the explicit freshness/applicability label and the current graph-backed result that takes precedence. Do not create a fake stale badge by editing UI state or changing only the display text. Keep this clip ready even if the short primary video can only show the positive cross-session retrieval path.
 
 ### 8.6 Local setup
 
@@ -435,16 +435,16 @@ A successful-looking UI is not permission to collapse these distinctions.
 
 ## 11. Demo failure and recovery plan
 
-Do not attempt to repair the application live during the final recording. Use the Day 4 runbook and the final known-good fixture state.
+Do not attempt to repair the application live during the final recording. Use the Day 4 runbook and the final known-good demo state.
 
 | Problem during rehearsal | Correct response |
 |---|---|
-| Public GitHub import fails | Use the bundled offline fixture. The main demo must not depend on public networking. |
+| Public GitHub import fails | Use the selected local offline source input. The main demo must not depend on public networking. |
 | LLM provider unavailable | Run the tested offline fallback if it supports the intended demo. If it does not produce a real investigation, do not stage a fake response or claim the full workflow passed. |
 | FalkorDB unavailable | Stop and repair the environment. A static graph illustration is not a substitute for the required primary graph database. |
 | Rust engine/gRPC unavailable | Stop and repair the real end-to-end path. Do not switch to a mocked endpoint for the submission recording. |
 | Impact path is empty or wrong | Reset/reseed the isolated fixture, verify the chosen symbol and edge, rerun the test, and only then record. Do not hand-edit the displayed output. |
-| No useful test candidate is supported | Select a different fixture symbol with a tested association, or state the limitation honestly. Do not label a guessed test as mapped evidence. |
+| No useful test candidate is supported | Select a different source-input symbol with a tested association, or state the limitation honestly. Do not label a guessed test as mapped evidence. |
 | Handoff does not survive a fresh session | Track 02 is not proven. Fix and retest the persisted flow before recording it. |
 | Retrieved memory is stale or unknown | Show that state honestly if it is a purposeful scenario. For the primary positive story, use memory that has passed the current-evidence check. |
 | UI displays the wrong snapshot or stage status | Treat as a defect. Do not cover it with voice-over. |
@@ -509,7 +509,7 @@ Track 02 review episode/finding shown:
 Persisted handoff identifier/reference:
 Fresh session used:
 Current-evidence validation shown:
-Stale-memory fixture/test reference and visible-proof status (if supported):
+Stale-memory source-input/test reference and visible-proof status (if supported):
 Rust / TypeScript-JavaScript / Python E2E status:
 Track 01 gate status:
 Track 02 gate status:
