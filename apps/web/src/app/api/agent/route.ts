@@ -29,8 +29,8 @@ export async function POST(request: Request) {
     : [];
   publishOperation({ operationId, status: "planning", sequence: 1, message: "Planning investigation" });
   void (async () => {
+    let sequence = 1;
     try {
-      let sequence = 1;
       const answer = await investigateChange(
         createConfiguredProvider(),
         body.question as string,
@@ -50,8 +50,9 @@ export async function POST(request: Request) {
       publishOperation({ operationId, status: "completed", sequence, message: "Investigation completed" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Agent unavailable";
+      sequence += 1;
       setOperationResult(operationId, { error: message });
-      publishOperation({ operationId, status: "failed", sequence: 3, message });
+      publishOperation({ operationId, status: "failed", sequence, message });
     }
   })();
   return NextResponse.json({ operationId }, { status: 202 });

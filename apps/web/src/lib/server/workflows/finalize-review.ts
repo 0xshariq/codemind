@@ -2,6 +2,17 @@ import "server-only";
 
 import { persistReviewContext } from "../rust-client/client";
 
+function snakeCase(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(snakeCase);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [
+      key.replace(/[A-Z]/g, (character) => `_${character.toLowerCase()}`),
+      snakeCase(nested),
+    ]),
+  );
+}
+
 export type ReviewFinalizationInput = {
   contextId: string;
   scope: string;
@@ -23,16 +34,21 @@ export async function finalizeReview(input: ReviewFinalizationInput) {
     throw new Error("review finalization exceeds bounded persistence limits");
   }
 
-  const payload = {
-    contextId: input.contextId,
+  const payload = snakeCase({
+    context_id: input.contextId,
     scope: input.scope,
     session: input.session,
     turns: input.turns,
     episode: input.episode,
     findings: input.findings,
-    context: input.context,
-    updatedAt: input.updatedAt,
-  };
+    context: {
+      repository_id: input.context.repositoryId,
+      workspace_id: input.context.workspaceId,
+      source_snapshot_id: input.context.sourceSnapshotId,
+      graph_version: input.context.graphVersion,
+    },
+    updated_at: input.updatedAt,
+  });
 
   if (JSON.stringify(payload).length > 16 * 1024) {
     throw new Error("review finalization payload exceeds 16 KiB");

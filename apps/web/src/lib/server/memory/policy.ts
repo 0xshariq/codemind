@@ -7,8 +7,10 @@ export function canReadMemory(input: {
   scope: string;
   requestedScope: string;
   workspaceId: string;
+  allowedScopes: readonly string[];
 }) {
   return MEMORY_SCOPES.includes(input.scope as (typeof MEMORY_SCOPES)[number])
     && input.scope === input.requestedScope
-    && input.workspaceId.trim().length > 0;
+    && input.workspaceId.trim().length > 0
+    && input.allowedScopes.includes(input.requestedScope);
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { persistMemory } from "@/lib/server/rust-client/client";
 import { retrieveAuthorizedMemory } from "@/lib/server/memory/retrieval";
+import { loadAuthenticatedSession } from "@/lib/server/auth/context";
 
 const contextSchema = z.object({
   repositoryId: z.string().min(1),
@@ -43,8 +44,17 @@ export async function GET(request: Request) {
   if (!context.success || !["user", "repository", "team"].includes(scope) || !["semantic", "procedure"].includes(kind)) {
     return NextResponse.json({ outcome: "invalid", error: "valid context, scope, and kind are required" }, { status: 400 });
   }
+  let session: ReturnType<typeof loadAuthenticatedSession>;
   try {
-    return NextResponse.json({ outcome: "success", memories: await retrieveAuthorizedMemory({ context: context.data, scope, kind }) });
+    session = loadAuthenticatedSession(request);
+  } catch (error) {
+    return NextResponse.json(
+      { outcome: "unauthorized", error: error instanceof Error ? error.message : "authenticated session is required" },
+      { status: 401 },
+    );
+  }
+  try {
+    return NextResponse.json({ outcome: "success", memories: await retrieveAuthorizedMemory({ context: context.data, scope, kind, session }) });
   } catch (error) {
     return NextResponse.json({ outcome: "unavailable", error: error instanceof Error ? error.message : "memory service unavailable" }, { status: 502 });
   }

@@ -392,7 +392,8 @@ impl MemoryRepository for FalkorDbStorage {
         Self::validate_context(context)?;
         let mut graph = self.client.select_graph(&self.graph_name);
         let mut rows = graph.ro_query(
-            "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) RETURN h.payload_json AS payload LIMIT 1"
+            "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+             RETURN h.payload_json AS payload, h.status AS status, h.version AS version LIMIT 1"
         )
         .with_param("id", handoff_id.to_owned())
         .with_param("workspace", context.workspace_id.clone())
@@ -405,8 +406,15 @@ impl MemoryRepository for FalkorDbStorage {
         let payload: String = row
             .try_get("payload")
             .map_err(|error| StorageError::Query(error.to_string()))?;
-        let record: HandoffRecord = serde_json::from_str(&payload)
+        let mut record: HandoffRecord = serde_json::from_str(&payload)
             .map_err(|error| StorageError::Query(error.to_string()))?;
+        record.status = row
+            .try_get("status")
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let version: i64 = row
+            .try_get("version")
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        record.version = version.max(0) as u64;
         if record.context.source_snapshot_id != context.source_snapshot_id
             || record.context.graph_version != context.graph_version
         {
@@ -426,27 +434,51 @@ impl MemoryRepository for FalkorDbStorage {
         if !matches!(status, "claimed" | "consumed" | "expired") {
             return Err(StorageError::Query("invalid handoff transition".to_owned()));
         }
+        let now = Utc::now().to_rfc3339();
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph
+            .query(
+                "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+                 WHERE (h.status = 'pending' AND ($status = 'claimed' OR $status = 'expired')) \
+                    OR (h.status = 'claimed' AND $status = 'consumed') \
+                 SET h.status = $status, h.version = h.version + 1, h.updated_at = $updated_at \
+                 RETURN h.payload_json AS payload, h.status AS status, h.version AS version",
+            )
+            .with_param("id", handoff_id.to_owned())
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("status", status.to_owned())
+            .with_param("updated_at", now)
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        if let Some(row) = rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            let payload: String = row
+                .try_get("payload")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let mut record = serde_json::from_str::<HandoffRecord>(&payload)
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            record.status = row
+                .try_get("status")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let version: i64 = row
+                .try_get("version")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            record.version = version.max(0) as u64;
+            return Ok(record);
+        }
+
         let current = self.retrieve_handoff(context, handoff_id).await?;
         if (current.status == "consumed" && status == "consumed")
             || (current.status == "expired" && status == "expired")
         {
             return Ok(current);
         }
-        let valid = matches!(
-            (current.status.as_str(), status),
-            ("pending", "claimed") | ("claimed", "consumed") | ("pending", "expired")
-        );
-        if !valid {
-            return Err(StorageError::Query(format!(
-                "handoff cannot transition from {} to {status}",
-                current.status
-            )));
-        }
-        let mut next = current;
-        next.status = status.to_owned();
-        next.version += 1;
-        next.updated_at = Utc::now().to_rfc3339();
-        self.persist_handoff(&next).await
+        Err(StorageError::Query(format!(
+            "handoff transition conflict: {} -> {status}",
+            current.status
+        )))
     }
 
     async fn persist_review_context(

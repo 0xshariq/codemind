@@ -114,13 +114,11 @@ export async function analyzeChange(input: {
 }
 
 type MemoryRpc = {
-  persistMemory(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
-  retrieveMemory(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
-  persistHandoff(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
-  retrieveHandoff(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
-  transitionHandoff(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
-  persistReviewContext(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
-  retrieveReviewContext(request: Record<string, unknown>, callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void): grpc.ClientUnaryCall;
+  [method: string]: (
+    request: Record<string, unknown>,
+    options: grpc.CallOptions,
+    callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void,
+  ) => grpc.ClientUnaryCall;
 };
 
 async function memoryClient() {
@@ -142,8 +140,8 @@ function callMemory(
   method: keyof MemoryRpc,
   request: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  return memoryClient().then(({ client }) => new Promise((resolve, reject) => {
-    client[method](request, (error, response) => {
+  return memoryClient().then(({ client, timeoutMs }) => new Promise((resolve, reject) => {
+    client[method](request, { deadline: Date.now() + timeoutMs }, (error, response) => {
       client.close();
       if (error) reject(error);
       else resolve(response);
