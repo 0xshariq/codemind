@@ -16,7 +16,7 @@ pub enum StorageError {
 }
 
 #[async_trait]
-pub trait GraphStorage: Send + Sync {
+pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepository {
     async fn write_code_graph(&self, graph: &CodeGraph) -> Result<(), StorageError>;
     async fn write_test_graph(
         &self,

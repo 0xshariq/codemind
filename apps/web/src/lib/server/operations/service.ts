@@ -14,12 +14,20 @@ function scheduleEviction(operationId: string) {
 }
 
 export function publishOperation(state: OperationState): OperationEvent {
-  const next = event(state);
   const history = operations.get(state.operationId) ?? [];
+  const last = history.at(-1);
+  if (last && (state.sequence <= last.sequence || isTerminal(last.status))) {
+    return last;
+  }
+  const next = event(state);
   history.push(next);
   operations.set(state.operationId, history);
-  if (state.status === "completed" || state.status === "failed") scheduleEviction(state.operationId);
+  if (isTerminal(state.status)) scheduleEviction(state.operationId);
   return next;
+}
+
+function isTerminal(status: OperationState["status"]) {
+  return status === "completed" || status === "failed";
 }
 
 export function getOperation(operationId: string): OperationEvent[] {

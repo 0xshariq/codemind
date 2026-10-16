@@ -112,3 +112,79 @@ export async function analyzeChange(input: {
     });
   });
 }
+
+type MemoryRpc = {
+  [method: string]: (
+    request: Record<string, unknown>,
+    options: grpc.CallOptions,
+    callback: (error: grpc.ServiceError | null, response: Record<string, unknown>) => void,
+  ) => grpc.ClientUnaryCall;
+};
+
+async function memoryClient() {
+  const config = getRustClientConfig();
+  const packageDefinition = await protoLoader.load(
+    path.resolve(process.cwd(), "../../proto/v1/memory.proto"),
+    { includeDirs: [path.resolve(process.cwd(), "../../proto")] },
+  );
+  const loaded = grpc.loadPackageDefinition(packageDefinition) as unknown as {
+    codemind: { v1: { MemoryService: new (address: string, credentials: grpc.ChannelCredentials) => grpc.Client & MemoryRpc } };
+  };
+  return {
+    client: new loaded.codemind.v1.MemoryService(config.endpoint, grpc.credentials.createInsecure()),
+    timeoutMs: config.timeoutMs,
+  };
+}
+
+function callMemory(
+  method: keyof MemoryRpc,
+  request: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return memoryClient().then(({ client, timeoutMs }) => new Promise((resolve, reject) => {
+    client[method](request, { deadline: Date.now() + timeoutMs }, (error, response) => {
+      client.close();
+      if (error) reject(error);
+      else resolve(response);
+    });
+  }));
+}
+
+export function persistMemory(memory: Record<string, unknown>) {
+  return callMemory("persistMemory", { memory });
+}
+
+export function retrieveMemory(input: {
+  context: Record<string, string>;
+  scope: string;
+  kind: string;
+  limit?: number;
+}) {
+  return callMemory("retrieveMemory", { ...input, limit: input.limit ?? 20 });
+}
+
+export function persistHandoff(handoff: Record<string, unknown>, idempotencyKey: string) {
+  return callMemory("persistHandoff", { handoff, idempotencyKey });
+}
+
+export function retrieveHandoff(handoffId: string, context: Record<string, string>) {
+  return callMemory("retrieveHandoff", { handoffId, context });
+}
+
+export function transitionHandoff(
+  handoffId: string,
+  status: string,
+  context: Record<string, string>,
+) {
+  return callMemory("transitionHandoff", { handoffId, status, context });
+}
+
+export function persistReviewContext(review: Record<string, unknown>) {
+  return callMemory("persistReviewContext", { review });
+}
+
+export function retrieveReviewContext(
+  contextId: string,
+  context: Record<string, string>,
+) {
+  return callMemory("retrieveReviewContext", { contextId, context });
+}

@@ -752,20 +752,36 @@ Use actual structured results. The UI must not parse the LLM prose to infer risk
 
 **Day 3 exit gate**
 
-- [ ] Review episode persists.
-- [ ] Finding persists with evidence references.
-- [ ] Semantic memory and procedure persist.
-- [ ] At least one handoff persists.
-- [ ] Receiving stage retrieves and consumes the persisted handoff.
-- [ ] New session retrieves authorized memory.
-- [ ] Memory freshness/applicability is checked against current evidence.
-- [ ] Stale memory never overrides fresh graph facts.
-- [ ] Scope isolation works.
-- [ ] Operation state/progress survives browser disconnect and supports reconnect.
-- [ ] The chat UI displays structured analysis and explicit limitations.
-- [ ] Track 02 E2E passes.
+- [x] Review episode persists.
+- [x] Finding persists with evidence references.
+- [x] Semantic memory and procedure persist.
+- [x] At least one handoff persists.
+- [x] Receiving stage retrieves and consumes the persisted handoff.
+- [x] New session retrieves authorized memory.
+- [x] Memory freshness/applicability is checked against current evidence.
+- [x] Stale memory never overrides fresh graph facts.
+- [x] Scope isolation works.
+- [x] Operation state/progress survives browser disconnect and supports reconnect.
+- [x] The chat UI displays structured analysis and explicit limitations.
+- [x] Track 02 E2E passes.
 
 If this gate fails, cut advanced memory policy and secondary UI polish; do not replace persistent memory or handoff with a mock.
+
+### Day 3 implementation status — 16 October 2026
+
+**Status: DONE.** The `day-3` branch contains the persistent Track 02
+vertical slice: bounded session, turn, episode and finding records; qualified
+semantic and procedure memory; idempotent FalkorDB-backed handoffs; gRPC
+memory operations; Next.js retrieval and finalization boundaries; freshness
+and scope checks; operation reconnect handling; and the functional Memory
+Inspector and handoff status surfaces.
+
+The Day 3 gate was verified with a healthy FalkorDB container, the complete
+Rust workspace suite including both real FalkorDB integration tests, all web
+Vitest tests, the operation recovery tests, TypeScript validation, ESLint,
+the production Next.js build, Protobuf regeneration, and diff hygiene checks.
+The browser test command was not applicable to the recovery spec because that
+file is a Vitest suite; it was executed successfully through Vitest instead.
 
 ---
 

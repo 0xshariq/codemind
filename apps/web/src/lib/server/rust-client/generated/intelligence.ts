@@ -2,6 +2,7 @@ import type * as grpc from '@grpc/grpc-js';
 import type { EnumTypeDefinition, MessageTypeDefinition } from '@grpc/proto-loader';
 
 import type { CanonicalResult as _codemind_v1_CanonicalResult, CanonicalResult__Output as _codemind_v1_CanonicalResult__Output } from './codemind/v1/CanonicalResult';
+import type { ChangeAnalysisQuery as _codemind_v1_ChangeAnalysisQuery, ChangeAnalysisQuery__Output as _codemind_v1_ChangeAnalysisQuery__Output } from './codemind/v1/ChangeAnalysisQuery';
 import type { Correlation as _codemind_v1_Correlation, Correlation__Output as _codemind_v1_Correlation__Output } from './codemind/v1/Correlation';
 import type { Diagnostic as _codemind_v1_Diagnostic, Diagnostic__Output as _codemind_v1_Diagnostic__Output } from './codemind/v1/Diagnostic';
 import type { ErrorStatus as _codemind_v1_ErrorStatus, ErrorStatus__Output as _codemind_v1_ErrorStatus__Output } from './codemind/v1/ErrorStatus';
@@ -19,6 +20,7 @@ export interface ProtoGrpcType {
   codemind: {
     v1: {
       CanonicalResult: MessageTypeDefinition<_codemind_v1_CanonicalResult, _codemind_v1_CanonicalResult__Output>
+      ChangeAnalysisQuery: MessageTypeDefinition<_codemind_v1_ChangeAnalysisQuery, _codemind_v1_ChangeAnalysisQuery__Output>
       Completeness: EnumTypeDefinition
       Correlation: MessageTypeDefinition<_codemind_v1_Correlation, _codemind_v1_Correlation__Output>
       Diagnostic: MessageTypeDefinition<_codemind_v1_Diagnostic, _codemind_v1_Diagnostic__Output>
