@@ -15,7 +15,7 @@ export interface IntelligenceServiceClient extends grpc.Client {
   analyzeChange(argument: _codemind_v1_ChangeAnalysisQuery, metadata: grpc.Metadata, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
   analyzeChange(argument: _codemind_v1_ChangeAnalysisQuery, options: grpc.CallOptions, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
   analyzeChange(argument: _codemind_v1_ChangeAnalysisQuery, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
-
+  
   QuerySymbolRelationships(argument: _codemind_v1_SymbolRelationshipQuery, metadata: grpc.Metadata, options: grpc.CallOptions, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
   QuerySymbolRelationships(argument: _codemind_v1_SymbolRelationshipQuery, metadata: grpc.Metadata, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
   QuerySymbolRelationships(argument: _codemind_v1_SymbolRelationshipQuery, options: grpc.CallOptions, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
@@ -24,12 +24,12 @@ export interface IntelligenceServiceClient extends grpc.Client {
   querySymbolRelationships(argument: _codemind_v1_SymbolRelationshipQuery, metadata: grpc.Metadata, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
   querySymbolRelationships(argument: _codemind_v1_SymbolRelationshipQuery, options: grpc.CallOptions, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
   querySymbolRelationships(argument: _codemind_v1_SymbolRelationshipQuery, callback: grpc.requestCallback<_codemind_v1_QueryResponse__Output>): grpc.ClientUnaryCall;
-
+  
 }
 
 export interface IntelligenceServiceHandlers extends grpc.UntypedServiceImplementation {
   AnalyzeChange: grpc.handleUnaryCall<_codemind_v1_ChangeAnalysisQuery__Output, _codemind_v1_QueryResponse>;
-
+  
   QuerySymbolRelationships: grpc.handleUnaryCall<_codemind_v1_SymbolRelationshipQuery__Output, _codemind_v1_QueryResponse>;
   
 }

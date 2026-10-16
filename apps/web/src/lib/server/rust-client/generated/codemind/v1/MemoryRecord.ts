@@ -6,6 +6,7 @@ import type { Long } from '@grpc/proto-loader';
 
 export interface MemoryRecord {
   'memory_id'?: (string);
+  'owner_id'?: (string);
   'kind'?: (string);
   'scope'?: (string);
   'lifecycle'?: (string);
@@ -21,6 +22,7 @@ export interface MemoryRecord {
 
 export interface MemoryRecord__Output {
   'memory_id'?: (string);
+  'owner_id'?: (string);
   'kind'?: (string);
   'scope'?: (string);
   'lifecycle'?: (string);

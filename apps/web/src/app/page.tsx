@@ -13,6 +13,7 @@ export default function Home() {
     graphVersion: "",
   });
   const [symbolId, setSymbolId] = useState("");
+  const [handoff, setHandoff] = useState<{ handoffId: string; status: "pending" | "claimed" | "consumed" | "expired"; targetStage: string }>();
   const ready = Object.values(context).every(Boolean) && Boolean(symbolId);
 
   return (
@@ -39,11 +40,11 @@ export default function Home() {
           <input value={symbolId} required className="rounded-lg border border-border bg-background px-3 py-2" onChange={(event) => setSymbolId(event.target.value)} />
         </label>
       </section>
-      {ready ? <ChatPanel symbolId={symbolId} context={context} /> : <p className="text-sm text-muted-foreground">Enter the persisted repository and symbol context to begin.</p>}
+      {ready ? <ChatPanel symbolId={symbolId} context={context} onHandoff={setHandoff} /> : <p className="text-sm text-muted-foreground">Enter the persisted repository and symbol context to begin.</p>}
       {ready && (
         <section className="grid gap-6 lg:grid-cols-2">
-          <MemoryInspector context={context} />
-          <HandoffStatus />
+          <MemoryInspector key={`${context.repositoryId}:${context.workspaceId}:${context.sourceSnapshotId}:${context.graphVersion}`} context={context} />
+          <HandoffStatus {...handoff} />
         </section>
       )}
     </main>

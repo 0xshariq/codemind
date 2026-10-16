@@ -3,11 +3,21 @@ import { createConfiguredProvider } from "@/lib/server/agent/provider";
 import { investigateChange } from "@/lib/server/workflows/investigate-change";
 import { publishOperation } from "@/lib/server/operations/service";
 import { setOperationResult } from "@/lib/server/operations/service";
+import { finalizeReview } from "@/lib/server/workflows/finalize-review";
+import { loadHandoff, saveHandoff, updateHandoff } from "@/lib/server/handoffs/service";
+import { persistMemory } from "@/lib/server/rust-client/client";
+import { loadAuthenticatedSession } from "@/lib/server/auth/context";
 
 export async function POST(request: Request) {
   let body: {
     question?: unknown;
     toolCalls?: unknown;
+    context?: {
+      repositoryId?: unknown;
+      workspaceId?: unknown;
+      sourceSnapshotId?: unknown;
+      graphVersion?: unknown;
+    };
   };
   try {
     body = (await request.json()) as typeof body;
@@ -46,7 +56,79 @@ export async function POST(request: Request) {
         },
       );
       sequence += 1;
-      setOperationResult(operationId, { answer });
+      const context = body.context;
+      const hasContext = context
+        && Object.values(context).every((value) => typeof value === "string" && value.length > 0);
+      let handoffResult: { handoffId?: string; handoffStatus?: string; targetStage?: string } = {};
+      if (hasContext) {
+        loadAuthenticatedSession(request);
+        const reviewContext = {
+          repositoryId: context.repositoryId as string,
+          workspaceId: context.workspaceId as string,
+          sourceSnapshotId: context.sourceSnapshotId as string,
+          graphVersion: context.graphVersion as string,
+        };
+        const now = new Date().toISOString();
+        await finalizeReview({
+          contextId: operationId,
+          scope: "repository",
+          context: reviewContext,
+          session: {
+            sessionId: operationId,
+            scope: "repository",
+            context: reviewContext,
+            startedAt: now,
+            endedAt: now,
+          },
+          turns: [{ turnId: `${operationId}-turn`, sessionId: operationId, role: "assistant", summary: answer.slice(0, 4000), context: reviewContext, createdAt: now }],
+          episode: { episodeId: `${operationId}-episode`, sessionId: operationId, title: "Impact investigation", context: reviewContext, createdAt: now },
+          findings: [{ findingId: `${operationId}-finding`, episodeId: `${operationId}-episode`, summary: answer.slice(0, 4000), evidence: [], context: reviewContext, createdAt: now }],
+          updatedAt: now,
+        });
+        const memoryPayload = JSON.stringify({ summary: answer.slice(0, 4000), operationId });
+        for (const kind of ["semantic", "procedure"] as const) {
+          await persistMemory({
+            memoryId: `${operationId}-${kind}`,
+            ownerId: "",
+            kind,
+            scope: "repository",
+            lifecycle: "candidate",
+            freshness: "fresh",
+            payloadJson: memoryPayload,
+            context: reviewContext,
+            evidence: [],
+            idempotencyKey: `${operationId}-${kind}`,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+        await saveHandoff({
+          handoffId: `${operationId}-handoff`,
+          schemaVersion: "1",
+          operationId,
+          reviewEpisodeId: `${operationId}-episode`,
+          sourceStage: "impact",
+          targetStage: "test-investigation",
+          task: body.question as string,
+          findings: [answer.slice(0, 4000)],
+          evidenceReferences: [],
+          context: reviewContext,
+          openQuestions: [],
+          status: "pending",
+          idempotencyKey: `${operationId}-handoff`,
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        });
+        const handoffId = `${operationId}-handoff`;
+        await loadHandoff(handoffId, reviewContext);
+        await updateHandoff(handoffId, "claimed", reviewContext);
+        const consumed = await updateHandoff(handoffId, "consumed", reviewContext);
+        const savedHandoff = consumed as { handoff?: { handoffId?: string } };
+        handoffResult = { handoffId: String(savedHandoff.handoff?.handoffId ?? handoffId), handoffStatus: "consumed", targetStage: "test-investigation" };
+      }
+      setOperationResult(operationId, { answer, ...handoffResult });
       publishOperation({ operationId, status: "completed", sequence, message: "Investigation completed" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Agent unavailable";

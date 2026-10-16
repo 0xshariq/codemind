@@ -14,6 +14,8 @@ pub struct EvidenceReference {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemoryRecord {
     pub memory_id: String,
+    #[serde(default)]
+    pub owner_id: String,
     pub kind: String,
     pub scope: String,
     pub lifecycle: String,

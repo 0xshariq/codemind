@@ -290,11 +290,12 @@ impl MemoryRepository for FalkorDbStorage {
             .map_err(|error| StorageError::Query(error.to_string()))?;
         graph.query(
             "MERGE (m:MemoryRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot}) \
-             SET m.kind = $kind, m.scope = $scope, m.lifecycle = $lifecycle, m.freshness = $freshness, \
+             SET m.owner_id = $owner, m.kind = $kind, m.scope = $scope, m.lifecycle = $lifecycle, m.freshness = $freshness, \
              m.payload_json = $payload, m.graph_version = $graph_version, m.idempotency_key = $idempotency, \
              m.version = $version, m.updated_at = $updated_at, m.created_at = coalesce(m.created_at, $created_at)"
         )
         .with_param("id", record.memory_id.clone())
+        .with_param("owner", record.owner_id.clone())
         .with_param("kind", record.kind.clone())
         .with_param("scope", record.scope.clone())
         .with_param("lifecycle", record.lifecycle.clone())
@@ -319,6 +320,7 @@ impl MemoryRepository for FalkorDbStorage {
         context: &RepositoryContext,
         scope: &str,
         kind: &str,
+        owner_id: &str,
         limit: usize,
     ) -> Result<Vec<MemoryRecord>, StorageError> {
         Self::validate_context(context)?;
@@ -327,12 +329,16 @@ impl MemoryRepository for FalkorDbStorage {
             .ro_query(
                 "MATCH (m:MemoryRecord {workspace_id: $workspace, repository_id: $repository}) \
              WHERE m.scope = $scope AND m.kind = $kind \
+               AND (m.snapshot_id = $snapshot OR m.freshness <> 'fresh') \
+               AND (m.scope <> 'user' OR m.owner_id = $owner) \
              RETURN m.payload_json AS payload LIMIT $limit",
             )
             .with_param("workspace", context.workspace_id.clone())
             .with_param("repository", context.repository_id.clone())
             .with_param("scope", scope.to_owned())
             .with_param("kind", kind.to_owned())
+            .with_param("snapshot", context.source_snapshot_id.clone())
+            .with_param("owner", owner_id.to_owned())
             .with_param("limit", limit.clamp(1, 100) as i64)
             .execute()
             .await
@@ -364,14 +370,53 @@ impl MemoryRepository for FalkorDbStorage {
         };
         let payload = serde_json::to_string(record)
             .map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut existing = graph
+            .ro_query(
+                "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+                 RETURN h.payload_json AS payload, h.idempotency_key AS idempotency_key, \
+                 h.status AS status, h.version AS version LIMIT 1",
+            )
+            .with_param("id", record.handoff_id.clone())
+            .with_param("workspace", record.context.workspace_id.clone())
+            .with_param("repository", record.context.repository_id.clone())
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        if let Some(row) = existing.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            let existing_key: String = row
+                .try_get("idempotency_key")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let existing_payload: String = row
+                .try_get("payload")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let mut current = serde_json::from_str::<HandoffRecord>(&existing_payload)
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            current.status = row
+                .try_get("status")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let version: i64 = row
+                .try_get("version")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            current.version = version.max(0) as u64;
+            if existing_key == record.idempotency_key {
+                return Ok(current);
+            }
+            return Err(StorageError::Query(
+                "conflicting handoff delivery".to_owned(),
+            ));
+        }
         graph.query(
             "MERGE (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
              SET h.payload_json = $payload, h.status = $status, h.version = $version, \
+             h.snapshot_id = $snapshot, h.graph_version = $graph_version, \
              h.idempotency_key = $idempotency, h.updated_at = $updated_at, h.created_at = coalesce(h.created_at, $created_at)"
         )
         .with_param("id", record.handoff_id.clone())
         .with_param("workspace", record.context.workspace_id.clone())
         .with_param("repository", record.context.repository_id.clone())
+        .with_param("snapshot", record.context.source_snapshot_id.clone())
+        .with_param("graph_version", record.context.graph_version.clone())
         .with_param("payload", payload)
         .with_param("status", record.status.clone())
         .with_param("version", record.version as i64)
@@ -392,12 +437,14 @@ impl MemoryRepository for FalkorDbStorage {
         Self::validate_context(context)?;
         let mut graph = self.client.select_graph(&self.graph_name);
         let mut rows = graph.ro_query(
-            "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+            "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
              RETURN h.payload_json AS payload, h.status AS status, h.version AS version LIMIT 1"
         )
         .with_param("id", handoff_id.to_owned())
         .with_param("workspace", context.workspace_id.clone())
         .with_param("repository", context.repository_id.clone())
+        .with_param("snapshot", context.source_snapshot_id.clone())
+        .with_param("graph_version", context.graph_version.clone())
         .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
         let Some(row) = rows.data.next().await else {
             return Err(StorageError::Query("handoff not found".to_owned()));

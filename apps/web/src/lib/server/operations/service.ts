@@ -3,7 +3,7 @@ import type { OperationState } from "./state";
 import { event } from "./events";
 
 const operations = new Map<string, OperationEvent[]>();
-const results = new Map<string, { answer?: string; error?: string }>();
+const results = new Map<string, { answer?: string; error?: string; handoffId?: string; handoffStatus?: string; targetStage?: string }>();
 const TERMINAL_TTL_MS = 5 * 60 * 1000;
 
 function scheduleEviction(operationId: string) {
@@ -34,7 +34,7 @@ export function getOperation(operationId: string): OperationEvent[] {
   return [...(operations.get(operationId) ?? [])];
 }
 
-export function setOperationResult(operationId: string, result: { answer?: string; error?: string }) {
+export function setOperationResult(operationId: string, result: { answer?: string; error?: string; handoffId?: string; handoffStatus?: string; targetStage?: string }) {
   results.set(operationId, result);
 }
 

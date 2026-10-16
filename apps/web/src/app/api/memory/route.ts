@@ -63,8 +63,27 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const parsed = writeSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ outcome: "invalid", error: parsed.error.issues[0]?.message ?? "invalid memory" }, { status: 400 });
+  let session: ReturnType<typeof loadAuthenticatedSession>;
   try {
-    return NextResponse.json({ outcome: "success", memory: await persistMemory(parsed.data.memory) });
+    session = loadAuthenticatedSession(request);
+  } catch (error) {
+    return NextResponse.json(
+      { outcome: "unauthorized", error: error instanceof Error ? error.message : "authenticated session is required" },
+      { status: 401 },
+    );
+  }
+  const memory = parsed.data.memory;
+  if (
+    memory.context.workspaceId !== session.workspaceId
+    || !session.allowedScopes.includes(memory.scope)
+  ) {
+    return NextResponse.json({ outcome: "forbidden", error: "memory scope is not authorized" }, { status: 403 });
+  }
+  try {
+    return NextResponse.json({
+      outcome: "success",
+      memory: await persistMemory({ ...memory, ownerId: memory.scope === "user" ? session.userId : "" }),
+    });
   } catch (error) {
     return NextResponse.json({ outcome: "failed", error: error instanceof Error ? error.message : "memory persistence failed" }, { status: 502 });
   }

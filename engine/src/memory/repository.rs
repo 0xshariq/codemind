@@ -10,6 +10,7 @@ pub trait MemoryRepository: Send + Sync {
         context: &crate::source::RepositoryContext,
         scope: &str,
         kind: &str,
+        owner_id: &str,
         limit: usize,
     ) -> Result<Vec<MemoryRecord>, StorageError>;
     async fn persist_handoff(&self, record: &HandoffRecord) -> Result<HandoffRecord, StorageError>;

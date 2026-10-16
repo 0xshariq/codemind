@@ -11,6 +11,7 @@ pub fn validate_memory(record: &MemoryRecord) -> Result<(), String> {
         )
         || !matches!(record.freshness.as_str(), "fresh" | "stale" | "unknown")
         || record.payload_json.len() > MAX_PAYLOAD_BYTES
+        || (record.scope == "user" && record.owner_id.trim().is_empty())
     {
         return Err("memory record is invalid or exceeds the bounded schema".to_owned());
     }

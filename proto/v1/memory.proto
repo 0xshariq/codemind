@@ -20,17 +20,18 @@ message Handoff {
 
 message MemoryRecord {
   string memory_id = 1;
-  string kind = 2;
-  string scope = 3;
-  string lifecycle = 4;
-  string freshness = 5;
-  string payload_json = 6;
-  RepositoryContext context = 7;
-  repeated SourceReference evidence = 8;
-  string idempotency_key = 9;
-  uint64 version = 10;
-  string created_at = 11;
-  string updated_at = 12;
+  string owner_id = 2;
+  string kind = 3;
+  string scope = 4;
+  string lifecycle = 5;
+  string freshness = 6;
+  string payload_json = 7;
+  RepositoryContext context = 8;
+  repeated SourceReference evidence = 9;
+  string idempotency_key = 10;
+  uint64 version = 11;
+  string created_at = 12;
+  string updated_at = 13;
 }
 
 message PersistMemoryRequest {
@@ -43,6 +44,7 @@ message RetrieveMemoryRequest {
   string kind = 3;
   string target = 4;
   uint32 limit = 5;
+  string owner_id = 6;
 }
 
 message RetrieveMemoryResponse {

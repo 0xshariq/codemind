@@ -20,6 +20,7 @@ fn context(snapshot: &str) -> RepositoryContext {
 fn validated_memory_requires_bounded_evidence_and_context() {
     let record = MemoryRecord {
         memory_id: "memory-1".into(),
+        owner_id: "user-1".into(),
         kind: "semantic".into(),
         scope: "repository".into(),
         lifecycle: "validated".into(),
@@ -46,6 +47,7 @@ fn validated_memory_requires_bounded_evidence_and_context() {
 fn validated_memory_without_evidence_is_rejected() {
     let record = MemoryRecord {
         memory_id: "memory-2".into(),
+        owner_id: "user-1".into(),
         kind: "procedure".into(),
         scope: "repository".into(),
         lifecycle: "validated".into(),

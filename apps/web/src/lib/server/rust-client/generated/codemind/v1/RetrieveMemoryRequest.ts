@@ -8,6 +8,7 @@ export interface RetrieveMemoryRequest {
   'kind'?: (string);
   'target'?: (string);
   'limit'?: (number);
+  'owner_id'?: (string);
 }
 
 export interface RetrieveMemoryRequest__Output {
@@ -16,4 +17,5 @@ export interface RetrieveMemoryRequest__Output {
   'kind'?: (string);
   'target'?: (string);
   'limit'?: (number);
+  'owner_id'?: (string);
 }

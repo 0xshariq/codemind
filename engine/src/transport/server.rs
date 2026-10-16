@@ -72,6 +72,7 @@ where
             &context,
             &input.scope,
             &input.kind,
+            &input.owner_id,
             input.limit as usize,
         )
         .await
@@ -250,6 +251,7 @@ fn memory_record(input: generated::MemoryRecord) -> Result<MemoryRecord, Status>
     )?;
     Ok(MemoryRecord {
         memory_id: input.memory_id,
+        owner_id: input.owner_id,
         kind: input.kind,
         scope: input.scope,
         lifecycle: input.lifecycle,
@@ -283,6 +285,7 @@ fn handoff_record(input: generated::Handoff) -> Result<HandoffRecord, Status> {
 fn memory_proto(record: MemoryRecord) -> generated::MemoryRecord {
     generated::MemoryRecord {
         memory_id: record.memory_id,
+        owner_id: record.owner_id,
         kind: record.kind,
         scope: record.scope,
         lifecycle: record.lifecycle,

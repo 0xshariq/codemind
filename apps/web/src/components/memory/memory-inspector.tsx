@@ -25,15 +25,20 @@ export function MemoryInspector({
   const [state, setState] = useState<"loading" | "ready" | "unavailable">("loading");
 
   useEffect(() => {
+    const controller = new AbortController();
     const query = new URLSearchParams({ ...context, scope, kind });
-    fetch(`/api/memory?${query}`)
+    fetch(`/api/memory?${query}`, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("unavailable");
         const value = await response.json() as { memories?: Memory[] };
         setMemories(value.memories ?? []);
         setState("ready");
       })
-      .catch(() => setState("unavailable"));
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setState("unavailable");
+      });
+    return () => controller.abort();
   }, [context, kind, scope]);
 
   return (

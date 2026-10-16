@@ -13,7 +13,7 @@ type Context = {
   graphVersion: string;
 };
 
-export function ChatPanel({ context, symbolId }: { context: Context; symbolId: string }) {
+export function ChatPanel({ context, symbolId, onHandoff }: { context: Context; symbolId: string; onHandoff?: (handoff: { handoffId: string; status: "pending" | "claimed" | "consumed" | "expired"; targetStage: string }) => void }) {
   const [question, setQuestion] = useState("What could this affect?");
   const [answer, setAnswer] = useState("");
   const [events, setEvents] = useState<TimelineEvent[]>([]);
@@ -47,10 +47,11 @@ export function ChatPanel({ context, symbolId }: { context: Context; symbolId: s
     source.onmessage = async () => {
       const history = await fetch(`/api/operations/${operationId}`).then((value) => value.json()) as {
         events?: TimelineEvent[];
-        result?: { answer?: string; error?: string };
+        result?: { answer?: string; error?: string; handoffId?: string; handoffStatus?: "pending" | "claimed" | "consumed" | "expired"; targetStage?: string };
       };
       setEvents(history.events ?? []);
       if (history.result?.answer) setAnswer(history.result.answer);
+      if (history.result?.handoffId && history.result.handoffStatus && history.result.targetStage) onHandoff?.({ handoffId: history.result.handoffId, status: history.result.handoffStatus, targetStage: history.result.targetStage });
       if (history.result?.error) setError(history.result.error);
       const status = history.events?.at(-1)?.status;
       if (status === "completed" || status === "failed") {

@@ -20,17 +20,22 @@ export async function retrieveAuthorizedMemory(input: {
     })) {
     throw new Error("memory scope is not authorized");
   }
-  const context = { ...input.context, workspaceId: input.session.workspaceId };
-  const response = await retrieveMemory({ ...input, context });
+  const requestedContext: Record<string, string> = {
+    repositoryId: input.context.repositoryId,
+    workspaceId: input.session.workspaceId,
+    sourceSnapshotId: input.context.sourceSnapshotId,
+    graphVersion: input.context.graphVersion,
+  };
+  const response = await retrieveMemory({ ...input, context: requestedContext, ownerId: input.session.userId });
   const memories = Array.isArray(response.memories) ? response.memories : [];
   return memories.map((memory) => {
     const value = memory as Record<string, unknown>;
-    const context = (value.context ?? {}) as Record<string, string>;
+    const storedContext = (value.context ?? {}) as Record<string, string>;
     return {
       ...value,
       freshness: classifyFreshness(
-        context.sourceSnapshotId ?? "",
-        context.sourceSnapshotId,
+        storedContext.sourceSnapshotId ?? "",
+        requestedContext.sourceSnapshotId,
         String(value.lifecycle ?? ""),
       ),
     };

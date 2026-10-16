@@ -157,6 +157,7 @@ export function retrieveMemory(input: {
   context: Record<string, string>;
   scope: string;
   kind: string;
+  ownerId?: string;
   limit?: number;
 }) {
   return callMemory("retrieveMemory", { ...input, limit: input.limit ?? 20 });
