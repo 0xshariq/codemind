@@ -5,8 +5,12 @@ use crate::engines::coie::model::{
 };
 use crate::engines::tie::model::{TestEntity, TestRelationship, TestRelationshipKind};
 use crate::graph_storage::port::{GraphStorage, StorageError};
+use crate::memory::model::{HandoffRecord, MemoryRecord, ReviewContextRecord};
+use crate::memory::repository::MemoryRepository;
+use crate::memory::validation;
 use crate::source::RepositoryContext;
 use async_trait::async_trait;
+use chrono::Utc;
 use falkordb::{FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
 use futures::StreamExt;
 
@@ -269,6 +273,244 @@ impl GraphStorage for FalkorDbStorage {
             .map_err(|error| StorageError::Query(error.to_string()))?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl MemoryRepository for FalkorDbStorage {
+    async fn persist_memory(&self, record: &MemoryRecord) -> Result<MemoryRecord, StorageError> {
+        validation::validate_memory(record).map_err(StorageError::Query)?;
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let now = if record.updated_at.is_empty() {
+            Utc::now().to_rfc3339()
+        } else {
+            record.updated_at.clone()
+        };
+        let payload = serde_json::to_string(record)
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        graph.query(
+            "MERGE (m:MemoryRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot}) \
+             SET m.kind = $kind, m.scope = $scope, m.lifecycle = $lifecycle, m.freshness = $freshness, \
+             m.payload_json = $payload, m.graph_version = $graph_version, m.idempotency_key = $idempotency, \
+             m.version = $version, m.updated_at = $updated_at, m.created_at = coalesce(m.created_at, $created_at)"
+        )
+        .with_param("id", record.memory_id.clone())
+        .with_param("kind", record.kind.clone())
+        .with_param("scope", record.scope.clone())
+        .with_param("lifecycle", record.lifecycle.clone())
+        .with_param("freshness", record.freshness.clone())
+        .with_param("payload", payload)
+        .with_param("workspace", record.context.workspace_id.clone())
+        .with_param("repository", record.context.repository_id.clone())
+        .with_param("snapshot", record.context.source_snapshot_id.clone())
+        .with_param("graph_version", record.context.graph_version.clone())
+        .with_param("idempotency", record.idempotency_key.clone())
+        .with_param("version", record.version as i64)
+        .with_param("updated_at", now.clone())
+        .with_param("created_at", record.created_at.clone())
+        .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut saved = record.clone();
+        saved.updated_at = now;
+        Ok(saved)
+    }
+
+    async fn retrieve_memory(
+        &self,
+        context: &RepositoryContext,
+        scope: &str,
+        kind: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryRecord>, StorageError> {
+        Self::validate_context(context)?;
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph
+            .ro_query(
+                "MATCH (m:MemoryRecord {workspace_id: $workspace, repository_id: $repository}) \
+             WHERE m.scope = $scope AND m.kind = $kind \
+             RETURN m.payload_json AS payload LIMIT $limit",
+            )
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("scope", scope.to_owned())
+            .with_param("kind", kind.to_owned())
+            .with_param("limit", limit.clamp(1, 100) as i64)
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            let payload: String = row
+                .try_get("payload")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let record = serde_json::from_str::<MemoryRecord>(&payload)
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            if record.context.source_snapshot_id == context.source_snapshot_id
+                || record.freshness != "fresh"
+            {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
+    async fn persist_handoff(&self, record: &HandoffRecord) -> Result<HandoffRecord, StorageError> {
+        validation::validate_handoff(record).map_err(StorageError::Query)?;
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let now = if record.updated_at.is_empty() {
+            Utc::now().to_rfc3339()
+        } else {
+            record.updated_at.clone()
+        };
+        let payload = serde_json::to_string(record)
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        graph.query(
+            "MERGE (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+             SET h.payload_json = $payload, h.status = $status, h.version = $version, \
+             h.idempotency_key = $idempotency, h.updated_at = $updated_at, h.created_at = coalesce(h.created_at, $created_at)"
+        )
+        .with_param("id", record.handoff_id.clone())
+        .with_param("workspace", record.context.workspace_id.clone())
+        .with_param("repository", record.context.repository_id.clone())
+        .with_param("payload", payload)
+        .with_param("status", record.status.clone())
+        .with_param("version", record.version as i64)
+        .with_param("idempotency", record.idempotency_key.clone())
+        .with_param("updated_at", now.clone())
+        .with_param("created_at", record.created_at.clone())
+        .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut saved = record.clone();
+        saved.updated_at = now;
+        Ok(saved)
+    }
+
+    async fn retrieve_handoff(
+        &self,
+        context: &RepositoryContext,
+        handoff_id: &str,
+    ) -> Result<HandoffRecord, StorageError> {
+        Self::validate_context(context)?;
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph.ro_query(
+            "MATCH (h:HandoffRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) RETURN h.payload_json AS payload LIMIT 1"
+        )
+        .with_param("id", handoff_id.to_owned())
+        .with_param("workspace", context.workspace_id.clone())
+        .with_param("repository", context.repository_id.clone())
+        .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
+        let Some(row) = rows.data.next().await else {
+            return Err(StorageError::Query("handoff not found".to_owned()));
+        };
+        let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+        let payload: String = row
+            .try_get("payload")
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let record: HandoffRecord = serde_json::from_str(&payload)
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        if record.context.source_snapshot_id != context.source_snapshot_id
+            || record.context.graph_version != context.graph_version
+        {
+            return Err(StorageError::Query(
+                "handoff snapshot or graph version is incompatible".to_owned(),
+            ));
+        }
+        Ok(record)
+    }
+
+    async fn transition_handoff(
+        &self,
+        context: &RepositoryContext,
+        handoff_id: &str,
+        status: &str,
+    ) -> Result<HandoffRecord, StorageError> {
+        if !matches!(status, "claimed" | "consumed" | "expired") {
+            return Err(StorageError::Query("invalid handoff transition".to_owned()));
+        }
+        let current = self.retrieve_handoff(context, handoff_id).await?;
+        if (current.status == "consumed" && status == "consumed")
+            || (current.status == "expired" && status == "expired")
+        {
+            return Ok(current);
+        }
+        let valid = matches!(
+            (current.status.as_str(), status),
+            ("pending", "claimed") | ("claimed", "consumed") | ("pending", "expired")
+        );
+        if !valid {
+            return Err(StorageError::Query(format!(
+                "handoff cannot transition from {} to {status}",
+                current.status
+            )));
+        }
+        let mut next = current;
+        next.status = status.to_owned();
+        next.version += 1;
+        next.updated_at = Utc::now().to_rfc3339();
+        self.persist_handoff(&next).await
+    }
+
+    async fn persist_review_context(
+        &self,
+        record: &ReviewContextRecord,
+    ) -> Result<ReviewContextRecord, StorageError> {
+        let mut graph = self.client.select_graph(&self.graph_name);
+        Self::validate_context(&record.context)?;
+        let payload = serde_json::to_string(record)
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        graph
+            .query(
+                "MERGE (r:ReviewContextRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+                 SET r.payload_json = $payload, r.snapshot_id = $snapshot, r.graph_version = $graph_version, \
+                 r.updated_at = $updated_at",
+            )
+            .with_param("id", record.context_id.clone())
+            .with_param("workspace", record.context.workspace_id.clone())
+            .with_param("repository", record.context.repository_id.clone())
+            .with_param("snapshot", record.context.source_snapshot_id.clone())
+            .with_param("graph_version", record.context.graph_version.clone())
+            .with_param("payload", payload)
+            .with_param("updated_at", record.updated_at.clone())
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        Ok(record.clone())
+    }
+
+    async fn retrieve_review_context(
+        &self,
+        context: &RepositoryContext,
+        context_id: &str,
+    ) -> Result<ReviewContextRecord, StorageError> {
+        Self::validate_context(context)?;
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph
+            .ro_query(
+                "MATCH (r:ReviewContextRecord {id: $id, workspace_id: $workspace, repository_id: $repository}) \
+                 RETURN r.payload_json AS payload LIMIT 1",
+            )
+            .with_param("id", context_id.to_owned())
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let Some(row) = rows.data.next().await else {
+            return Err(StorageError::Query("review context not found".to_owned()));
+        };
+        let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+        let payload: String = row
+            .try_get("payload")
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let record = serde_json::from_str::<ReviewContextRecord>(&payload)
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        if record.context.source_snapshot_id != context.source_snapshot_id
+            || record.context.graph_version != context.graph_version
+        {
+            return Err(StorageError::Query(
+                "review context snapshot or graph version is incompatible".to_owned(),
+            ));
+        }
+        Ok(record)
     }
 }
 

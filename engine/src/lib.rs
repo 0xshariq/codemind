@@ -4,6 +4,7 @@ pub mod config;
 pub mod engines;
 pub mod graph_storage;
 pub mod lifecycle;
+pub mod memory;
 pub mod source;
 pub mod transport;
 

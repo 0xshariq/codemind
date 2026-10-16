@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { ChatPanel } from "@/components/chat/chat-panel";
+import { MemoryInspector } from "@/components/memory/memory-inspector";
+import { HandoffStatus } from "@/components/memory/handoff-status";
 
 export default function Home() {
   const [context, setContext] = useState({
@@ -38,6 +40,12 @@ export default function Home() {
         </label>
       </section>
       {ready ? <ChatPanel symbolId={symbolId} context={context} /> : <p className="text-sm text-muted-foreground">Enter the persisted repository and symbol context to begin.</p>}
+      {ready && (
+        <section className="grid gap-6 lg:grid-cols-2">
+          <MemoryInspector context={context} />
+          <HandoffStatus />
+        </section>
+      )}
     </main>
   );
 }

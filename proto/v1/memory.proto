@@ -17,3 +17,86 @@ message Handoff {
   string payload_json = 3;
   RepositoryContext context = 4;
 }
+
+message MemoryRecord {
+  string memory_id = 1;
+  string kind = 2;
+  string scope = 3;
+  string lifecycle = 4;
+  string freshness = 5;
+  string payload_json = 6;
+  RepositoryContext context = 7;
+  repeated SourceReference evidence = 8;
+  string idempotency_key = 9;
+  uint64 version = 10;
+  string created_at = 11;
+  string updated_at = 12;
+}
+
+message PersistMemoryRequest {
+  MemoryRecord memory = 1;
+}
+
+message RetrieveMemoryRequest {
+  RepositoryContext context = 1;
+  string scope = 2;
+  string kind = 3;
+  string target = 4;
+  uint32 limit = 5;
+}
+
+message RetrieveMemoryResponse {
+  repeated MemoryRecord memories = 1;
+}
+
+message PersistHandoffRequest {
+  Handoff handoff = 1;
+  string idempotency_key = 2;
+}
+
+message RetrieveHandoffRequest {
+  string handoff_id = 1;
+  RepositoryContext context = 2;
+}
+
+message TransitionHandoffRequest {
+  string handoff_id = 1;
+  string status = 2;
+  RepositoryContext context = 3;
+}
+
+message ReviewContextRecord {
+  string context_id = 1;
+  string scope = 2;
+  string payload_json = 3;
+  RepositoryContext context = 4;
+  string updated_at = 5;
+}
+
+message PersistReviewContextRequest {
+  ReviewContextRecord review = 1;
+}
+
+message RetrieveReviewContextRequest {
+  string context_id = 1;
+  RepositoryContext context = 2;
+}
+
+message MemoryResponse {
+  oneof result {
+    MemoryRecord memory = 1;
+    Handoff handoff = 2;
+    ErrorStatus error = 3;
+    ReviewContextRecord review = 4;
+  }
+}
+
+service MemoryService {
+  rpc PersistMemory(PersistMemoryRequest) returns (MemoryResponse);
+  rpc RetrieveMemory(RetrieveMemoryRequest) returns (RetrieveMemoryResponse);
+  rpc PersistHandoff(PersistHandoffRequest) returns (MemoryResponse);
+  rpc RetrieveHandoff(RetrieveHandoffRequest) returns (MemoryResponse);
+  rpc TransitionHandoff(TransitionHandoffRequest) returns (MemoryResponse);
+  rpc PersistReviewContext(PersistReviewContextRequest) returns (MemoryResponse);
+  rpc RetrieveReviewContext(RetrieveReviewContextRequest) returns (MemoryResponse);
+}

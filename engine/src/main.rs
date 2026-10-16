@@ -1,8 +1,11 @@
 use anyhow::Result;
 use codemind_engine::config::Config;
-use codemind_engine::contract::generated::intelligence_service_server::IntelligenceServiceServer;
+use codemind_engine::contract::generated::{
+    intelligence_service_server::IntelligenceServiceServer,
+    memory_service_server::MemoryServiceServer,
+};
 use codemind_engine::graph_storage::FalkorDbStorage;
-use codemind_engine::transport::server::IntelligenceServer;
+use codemind_engine::transport::server::{IntelligenceServer, MemoryServer};
 use std::sync::Arc;
 use tonic::transport::Server;
 use tracing::info;
@@ -22,8 +25,9 @@ async fn main() -> Result<()> {
 
     Server::builder()
         .add_service(IntelligenceServiceServer::new(IntelligenceServer::new(
-            storage,
+            Arc::clone(&storage),
         )))
+        .add_service(MemoryServiceServer::new(MemoryServer::new(storage)))
         .serve(config.engine_addr)
         .await?;
     Ok(())
