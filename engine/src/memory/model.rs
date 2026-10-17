@@ -91,6 +91,8 @@ pub struct ReviewFinding {
 pub struct ReviewContextRecord {
     pub context_id: String,
     pub scope: String,
+    #[serde(default)]
+    pub owner_id: String,
     pub session: ConversationSession,
     pub turns: Vec<ConversationTurn>,
     pub episode: ReviewEpisode,

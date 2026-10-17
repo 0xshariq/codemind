@@ -25,6 +25,11 @@ fn graph(context: &RepositoryContext) -> CodeGraph {
         path: "src/lib.rs".to_owned(),
         line: 1,
         context: context.clone(),
+        language: Some(codemind_engine::source::Language::Rust),
+        native_kind: Some("source_file".to_owned()),
+        range: None,
+        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+        evidence: None,
     };
     let symbol = GraphEntity {
         id: "day-1-symbol".to_owned(),
@@ -33,6 +38,17 @@ fn graph(context: &RepositoryContext) -> CodeGraph {
         path: "src/lib.rs".to_owned(),
         line: 2,
         context: context.clone(),
+        language: Some(codemind_engine::source::Language::Rust),
+        native_kind: Some("function_item".to_owned()),
+        range: None,
+        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
+            path: "src/lib.rs".to_owned(),
+            start_line: 2,
+            end_line: 2,
+            snapshot_id: context.source_snapshot_id.clone(),
+            provenance: "test".to_owned(),
+        }),
     };
     CodeGraph {
         context: context.clone(),
@@ -43,12 +59,21 @@ fn graph(context: &RepositoryContext) -> CodeGraph {
             from: file.id,
             to: symbol.id,
             context: context.clone(),
+            resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+            evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
+                path: "src/lib.rs".to_owned(),
+                start_line: 2,
+                end_line: 2,
+                snapshot_id: context.source_snapshot_id.clone(),
+                provenance: "test".to_owned(),
+            }),
         }],
         diagnostics: Vec::new(),
     }
 }
 
 #[tokio::test]
+#[ignore = "requires FalkorDB; run with --ignored"]
 async fn writes_reads_isolates_and_repeats_canonical_graph_data() {
     let url = std::env::var("FALKORDB_URL").unwrap_or_else(|_| "redis://127.0.0.1:6380".to_owned());
     let storage = FalkorDbStorage::connect(&url, "codemind_day_1_integration")
@@ -78,6 +103,7 @@ async fn writes_reads_isolates_and_repeats_canonical_graph_data() {
 }
 
 #[tokio::test]
+#[ignore = "requires FalkorDB; run with --ignored"]
 async fn ingests_developer_source_into_the_real_graph() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("lib.rs"), "fn source_symbol() {}\n").unwrap();
@@ -88,14 +114,16 @@ async fn ingests_developer_source_into_the_real_graph() {
     let storage = FalkorDbStorage::connect(&url, "codemind_day_1_source")
         .await
         .unwrap();
-    let graph = CoieEngine.ingest(&snapshot, &storage).await.unwrap();
-    let file_id = graph
-        .entities
-        .iter()
-        .find(|entity| entity.kind == EntityKind::File)
-        .unwrap()
-        .id
-        .clone();
+    let report = CoieEngine.ingest(&snapshot, &storage).await.unwrap();
+    assert_eq!(report.context, snapshot.context);
+    assert!(report.entity_count > 0);
+    assert!(report.relationship_count > 0);
+
+    let file_id = format!(
+        "file:{}:{}",
+        snapshot.context.source_snapshot_id,
+        codemind_engine::source::identity::digest_text("lib.rs")
+    );
     let relationships = storage
         .relationships_for(&snapshot.context, &file_id, 10)
         .await

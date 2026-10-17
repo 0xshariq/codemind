@@ -14,3 +14,28 @@ message ProgressEvent {
   RepositoryContext context = 7;
   string message = 8;
 }
+
+message StreamProgressRequest {
+  RepositoryContext context = 1;
+  string operation_id = 2;
+  uint64 after_sequence = 3;
+  uint32 limit = 4;
+}
+
+message StartInvestigationRequest {
+  RepositoryContext context = 1;
+  string source_path = 2;
+  string symbol_name = 3;
+  Correlation correlation = 4;
+}
+
+message StartInvestigationResponse {
+  string operation_id = 1;
+  RepositoryContext context = 2;
+  string selected_entity_id = 3;
+}
+
+service OperationService {
+  rpc StartInvestigation(StartInvestigationRequest) returns (StartInvestigationResponse);
+  rpc StreamProgress(StreamProgressRequest) returns (stream ProgressEvent);
+}
