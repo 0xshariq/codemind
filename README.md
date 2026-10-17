@@ -412,356 +412,430 @@ No new major features. Perform:
 codemind/
 ├── AGENTS.md
 ├── README.md
-├── .gitignore
-│
-├── apps/
-│   └── web/
-│       ├── package.json
-│       ├── pnpm-workspace.yaml
-│       ├── playwright.config.ts
-│       ├── .env.example
+├── apps
+│   └── web
+│       ├── AGENTS.md
+│       ├── README.md
+│       ├── components.json
 │       ├── docker-compose.yml
+│       ├── eslint.config.mjs
+│       ├── next-env.d.ts
 │       ├── next.config.ts
+│       ├── package.json
+│       ├── playwright.config.ts
+│       ├── pnpm-lock.yaml
+│       ├── pnpm-workspace.yaml
+│       ├── public
+│       │   ├── file.svg
+│       │   ├── globe.svg
+│       │   ├── next.svg
+│       │   ├── vercel.svg
+│       │   └── window.svg
+│       ├── src
+│       │   ├── app
+│       │   │   ├── analysis
+│       │   │   │   └── [analysisId]
+│       │   │   │       └── page.tsx
+│       │   │   ├── api
+│       │   │   │   ├── agent
+│       │   │   │   │   └── route.ts
+│       │   │   │   ├── analysis
+│       │   │   │   │   ├── [analysisId]
+│       │   │   │   │   │   └── route.ts
+│       │   │   │   │   └── route.ts
+│       │   │   │   ├── conversations
+│       │   │   │   │   ├── [conversationId]
+│       │   │   │   │   │   └── route.ts
+│       │   │   │   │   ├── route.ts
+│       │   │   │   │   └── search
+│       │   │   │   │       └── route.ts
+│       │   │   │   ├── memory
+│       │   │   │   │   └── route.ts
+│       │   │   │   ├── operations
+│       │   │   │   │   └── [operationId]
+│       │   │   │   │       ├── events
+│       │   │   │   │       │   └── route.ts
+│       │   │   │   │       └── route.ts
+│       │   │   │   ├── relationships
+│       │   │   │   │   └── route.ts
+│       │   │   │   └── repositories
+│       │   │   │       ├── [repositoryId]
+│       │   │   │       │   └── route.ts
+│       │   │   │       └── route.ts
+│       │   │   ├── favicon.ico
+│       │   │   ├── globals.css
+│       │   │   ├── help
+│       │   │   │   └── page.tsx
+│       │   │   ├── layout.tsx
+│       │   │   ├── page.tsx
+│       │   │   ├── repositories
+│       │   │   │   ├── [repositoryId]
+│       │   │   │   │   └── page.tsx
+│       │   │   │   ├── new
+│       │   │   │   │   └── page.tsx
+│       │   │   │   └── page.tsx
+│       │   │   └── settings
+│       │   │       └── page.tsx
+│       │   ├── components
+│       │   │   ├── analysis
+│       │   │   │   ├── affected-files-panel.tsx
+│       │   │   │   ├── impact-card.tsx
+│       │   │   │   ├── recommendations-panel.tsx
+│       │   │   │   ├── risk-card.tsx
+│       │   │   │   ├── summary-panel.tsx
+│       │   │   │   └── test-impact-panel.tsx
+│       │   │   ├── chat
+│       │   │   │   ├── chat-composer.tsx
+│       │   │   │   ├── chat-panel.tsx
+│       │   │   │   ├── conversation-list.tsx
+│       │   │   │   ├── conversation-search-modal.tsx
+│       │   │   │   ├── message-list.tsx
+│       │   │   │   └── message-renderer.tsx
+│       │   │   ├── common
+│       │   │   │   ├── completeness-notice.tsx
+│       │   │   │   ├── empty-state.tsx
+│       │   │   │   ├── error-state.tsx
+│       │   │   │   └── loading-state.tsx
+│       │   │   ├── evidence
+│       │   │   │   └── evidence-panel.tsx
+│       │   │   ├── execution
+│       │   │   │   ├── engine-accordion.tsx
+│       │   │   │   ├── execution-timeline.tsx
+│       │   │   │   └── operation-status.tsx
+│       │   │   ├── graph
+│       │   │   │   ├── dependency-graph.tsx
+│       │   │   │   └── graph-path-panel.tsx
+│       │   │   ├── memory
+│       │   │   │   ├── handoff-status.tsx
+│       │   │   │   └── memory-inspector.tsx
+│       │   │   ├── repository
+│       │   │   │   ├── repository-card.tsx
+│       │   │   │   ├── repository-list.tsx
+│       │   │   │   └── repository-setup-form.tsx
+│       │   │   ├── settings
+│       │   │   │   └── settings-navigation.tsx
+│       │   │   ├── shell
+│       │   │   │   ├── app-shell.tsx
+│       │   │   │   └── sidebar.tsx
+│       │   │   └── ui
+│       │   │       ├── accordion.tsx
+│       │   │       ├── alert.tsx
+│       │   │       ├── badge.tsx
+│       │   │       ├── button.tsx
+│       │   │       ├── card.tsx
+│       │   │       ├── chip.tsx
+│       │   │       ├── code-block.tsx
+│       │   │       ├── data-table.tsx
+│       │   │       ├── icon-button.tsx
+│       │   │       ├── input.tsx
+│       │   │       ├── message.tsx
+│       │   │       ├── metric-card.tsx
+│       │   │       ├── modal.tsx
+│       │   │       ├── result-list.tsx
+│       │   │       ├── select.tsx
+│       │   │       ├── separator.tsx
+│       │   │       ├── sheet.tsx
+│       │   │       ├── sidebar.tsx
+│       │   │       ├── skeleton.tsx
+│       │   │       ├── status-indicator.tsx
+│       │   │       ├── tabs.tsx
+│       │   │       ├── textarea.tsx
+│       │   │       ├── timeline.tsx
+│       │   │       └── tooltip.tsx
+│       │   ├── hooks
+│       │   │   ├── use-highlighted-code.ts
+│       │   │   └── use-mobile.ts
+│       │   ├── lib
+│       │   │   ├── highlighter.tsx
+│       │   │   ├── server
+│       │   │   │   ├── agent
+│       │   │   │   │   ├── prompts.ts
+│       │   │   │   │   ├── provider.ts
+│       │   │   │   │   ├── runtime.test.ts
+│       │   │   │   │   ├── runtime.ts
+│       │   │   │   │   └── tool-loop.ts
+│       │   │   │   ├── auth
+│       │   │   │   │   ├── authorize.ts
+│       │   │   │   │   └── context.ts
+│       │   │   │   ├── config
+│       │   │   │   │   └── env.ts
+│       │   │   │   ├── conversations
+│       │   │   │   │   └── service.ts
+│       │   │   │   ├── handoffs
+│       │   │   │   │   ├── schema.ts
+│       │   │   │   │   └── service.ts
+│       │   │   │   ├── memory
+│       │   │   │   │   ├── freshness.ts
+│       │   │   │   │   ├── policy.ts
+│       │   │   │   │   ├── retrieval.ts
+│       │   │   │   │   └── service.ts
+│       │   │   │   ├── operations
+│       │   │   │   │   ├── events.ts
+│       │   │   │   │   ├── service.ts
+│       │   │   │   │   ├── sse.ts
+│       │   │   │   │   └── state.ts
+│       │   │   │   ├── results
+│       │   │   │   │   ├── canonical-json.ts
+│       │   │   │   │   ├── llm-encoding.test.ts
+│       │   │   │   │   ├── llm-encoding.ts
+│       │   │   │   │   ├── llm-projection.ts
+│       │   │   │   │   ├── ui-projection.ts
+│       │   │   │   │   └── validate.ts
+│       │   │   │   ├── rust-client
+│       │   │   │   │   ├── client.ts
+│       │   │   │   │   ├── generated
+│       │   │   │   │   │   ├── codemind
+│       │   │   │   │   │   │   └── v1
+│       │   │   │   │   │   │       ├── CanonicalResult.ts
+│       │   │   │   │   │   │       ├── ChangeAnalysisQuery.ts
+│       │   │   │   │   │   │       ├── Completeness.ts
+│       │   │   │   │   │   │       ├── Correlation.ts
+│       │   │   │   │   │   │       ├── Diagnostic.ts
+│       │   │   │   │   │   │       ├── ErrorStatus.ts
+│       │   │   │   │   │   │       ├── Freshness.ts
+│       │   │   │   │   │   │       ├── Handoff.ts
+│       │   │   │   │   │   │       ├── IntelligenceService.ts
+│       │   │   │   │   │   │       ├── MemoryRecord.ts
+│       │   │   │   │   │   │       ├── MemoryReference.ts
+│       │   │   │   │   │   │       ├── MemoryResponse.ts
+│       │   │   │   │   │   │       ├── MemoryService.ts
+│       │   │   │   │   │   │       ├── Outcome.ts
+│       │   │   │   │   │   │       ├── PersistHandoffRequest.ts
+│       │   │   │   │   │   │       ├── PersistMemoryRequest.ts
+│       │   │   │   │   │   │       ├── PersistReviewContextRequest.ts
+│       │   │   │   │   │   │       ├── ProgressEvent.ts
+│       │   │   │   │   │   │       ├── QueryResponse.ts
+│       │   │   │   │   │   │       ├── RepositoryContext.ts
+│       │   │   │   │   │   │       ├── RepositoryService.ts
+│       │   │   │   │   │   │       ├── RepositorySnapshot.ts
+│       │   │   │   │   │   │       ├── ResolveRepositoryRequest.ts
+│       │   │   │   │   │   │       ├── ResolveRepositoryResponse.ts
+│       │   │   │   │   │   │       ├── RetrieveHandoffRequest.ts
+│       │   │   │   │   │   │       ├── RetrieveMemoryRequest.ts
+│       │   │   │   │   │   │       ├── RetrieveMemoryResponse.ts
+│       │   │   │   │   │   │       ├── RetrieveReviewContextRequest.ts
+│       │   │   │   │   │   │       ├── ReviewContextRecord.ts
+│       │   │   │   │   │   │       ├── SourceReference.ts
+│       │   │   │   │   │   │       ├── SymbolRelationshipQuery.ts
+│       │   │   │   │   │   │       └── TransitionHandoffRequest.ts
+│       │   │   │   │   │   ├── common.ts
+│       │   │   │   │   │   ├── intelligence.ts
+│       │   │   │   │   │   ├── memory.ts
+│       │   │   │   │   │   ├── operation.ts
+│       │   │   │   │   │   └── repository.ts
+│       │   │   │   │   └── progress-stream.ts
+│       │   │   │   ├── tools
+│       │   │   │   │   ├── catalog.ts
+│       │   │   │   │   ├── executor.ts
+│       │   │   │   │   ├── guardrails.test.ts
+│       │   │   │   │   ├── guardrails.ts
+│       │   │   │   │   ├── implementations
+│       │   │   │   │   │   ├── analyze-change.ts
+│       │   │   │   │   │   ├── get-evidence.ts
+│       │   │   │   │   │   ├── get-historical-changes.ts
+│       │   │   │   │   │   ├── get-impact.ts
+│       │   │   │   │   │   ├── get-repository-context.ts
+│       │   │   │   │   │   ├── get-risk.ts
+│       │   │   │   │   │   ├── get-symbol.ts
+│       │   │   │   │   │   ├── get-test-impact.ts
+│       │   │   │   │   │   ├── get-test-intelligence.ts
+│       │   │   │   │   │   ├── index.ts
+│       │   │   │   │   │   ├── query-code-relationships.ts
+│       │   │   │   │   │   └── search-code.ts
+│       │   │   │   │   ├── registry.ts
+│       │   │   │   │   └── schemas.ts
+│       │   │   │   └── workflows
+│       │   │   │       ├── finalize-review.ts
+│       │   │   │       ├── investigate-change.ts
+│       │   │   │       └── prepare-repository.ts
+│       │   │   ├── shared
+│       │   │   │   ├── status.ts
+│       │   │   │   └── types.ts
+│       │   │   └── utils.ts
+│       │   └── tests
+│       │       ├── e2e
+│       │       │   ├── reconnect-recovery.spec.ts
+│       │       │   └── track01.spec.ts
+│       │       └── graph-conformance
+│       │           ├── canonical-model.spec.ts
+│       │           ├── relationship-semantics.spec.ts
+│       │           └── snapshot-isolation.spec.ts
 │       ├── tsconfig.json
-│       ├── vitest.config.ts
-│       └── src/
-│           ├── app/
-│           │   ├── layout.tsx
-│           │   ├── page.tsx
-│           │   ├── globals.css
-│           │   ├── repositories/
-│           │   │   ├── page.tsx
-│           │   │   ├── new/
-│           │   │   │   └── page.tsx
-│           │   │   └── [repositoryId]/
-│           │   │       └── page.tsx
-│           │   ├── analysis/
-│           │   │   └── [analysisId]/
-│           │   │       └── page.tsx
-│           │   ├── settings/
-│           │   │   └── page.tsx
-│           │   ├── help/
-│           │   │   └── page.tsx
-│           │   └── api/
-│           │       ├── repositories/
-│           │       │   ├── route.ts
-│           │       │   └── [repositoryId]/
-│           │       │       └── route.ts
-│           │       ├── agent/
-│           │       │   └── route.ts
-│           │       ├── conversations/
-│           │       │   ├── route.ts                 # List/create persisted conversation sessions
-│           │       │   ├── search/
-│           │       │   │   └── route.ts             # Search persisted conversation history
-│           │       │   └── [conversationId]/
-│           │       │       └── route.ts             # Load a session and its turns
-│           │       ├── analysis/
-│           │       │   └── [analysisId]/
-│           │       │       └── route.ts
-│           │       ├── operations/
-│           │       │   └── [operationId]/
-│           │       │       ├── route.ts
-│           │       │       └── events/
-│           │       │           └── route.ts
-│           │       └── memory/
-│           │           └── route.ts
-│           │
-│           ├── components/
-│           │   ├── ui/                           # Shared design-system primitives
-│           │   │   ├── button.tsx
-│           │   │   ├── icon-button.tsx
-│           │   │   ├── input.tsx
-│           │   │   ├── textarea.tsx
-│           │   │   ├── select.tsx
-│           │   │   ├── badge.tsx
-│           │   │   ├── chip.tsx
-│           │   │   ├── card.tsx
-│           │   │   ├── metric-card.tsx
-│           │   │   ├── tabs.tsx
-│           │   │   ├── accordion.tsx
-│           │   │   ├── tooltip.tsx
-│           │   │   ├── modal.tsx
-│           │   │   ├── side-panel.tsx
-│           │   │   ├── alert.tsx
-│           │   │   ├── skeleton.tsx
-│           │   │   ├── code-block.tsx
-│           │   │   ├── timeline.tsx
-│           │   │   ├── status-indicator.tsx
-│           │   │   ├── data-table.tsx
-│           │   │   └── result-list.tsx
-│           │   ├── shell/
-│           │   │   ├── app-shell.tsx
-│           │   │   └── sidebar.tsx
-│           │   ├── chat/
-│           │   │   ├── chat-panel.tsx
-│           │   │   ├── conversation-list.tsx
-│           │   │   ├── conversation-search-modal.tsx
-│           │   │   ├── message-list.tsx
-│           │   │   ├── message-renderer.tsx
-│           │   │   └── chat-composer.tsx
-│           │   ├── execution/
-│           │   │   ├── execution-timeline.tsx
-│           │   │   ├── engine-accordion.tsx
-│           │   │   └── operation-status.tsx
-│           │   ├── analysis/
-│           │   │   ├── summary-panel.tsx
-│           │   │   ├── impact-card.tsx
-│           │   │   ├── risk-card.tsx
-│           │   │   ├── affected-files-panel.tsx
-│           │   │   ├── test-impact-panel.tsx
-│           │   │   └── recommendations-panel.tsx
-│           │   ├── graph/
-│           │   │   ├── dependency-graph.tsx
-│           │   │   └── graph-path-panel.tsx
-│           │   ├── evidence/
-│           │   │   └── evidence-panel.tsx
-│           │   ├── memory/
-│           │   │   ├── memory-inspector.tsx
-│           │   │   └── handoff-status.tsx
-│           │   ├── repository/
-│           │   │   ├── repository-card.tsx
-│           │   │   ├── repository-list.tsx
-│           │   │   └── repository-setup-form.tsx
-│           │   ├── settings/
-│           │   │   └── settings-navigation.tsx
-│           │   └── common/
-│           │       ├── error-state.tsx
-│           │       ├── empty-state.tsx
-│           │       ├── loading-state.tsx
-│           │       └── completeness-notice.tsx
-│           │
-│           ├── tests/
-│           │     ├── e2e/
-│           │     │   ├── track01.spec.ts
-│           │     │   ├── track02.spec.ts
-│           │     │   └── reconnect-recovery.spec.ts
-│           │     ├── language-adapters/
-│           │     │   ├── rust-adapter.spec.ts
-│           │     │   ├── typescript-adapter.spec.ts
-│           │     │   └── python-adapter.spec.ts
-│           │     ├── graph-conformance/
-│           │     │   ├── canonical-model.spec.ts
-│           │     │   ├── relationship-semantics.spec.ts
-│           │     │   └── snapshot-isolation.spec.ts
-│           │     └── memory/
-│           │         ├── persistence.spec.ts
-│           │         ├── handoff.spec.ts
-│           │         └── scope-isolation.spec.ts
-│           │
-│           └── lib/
-│               ├── shared/
-│               │   ├── types.ts
-│               │   └── status.ts
-│               └── server/
-│                   ├── agent/
-│                   │   ├── runtime.ts
-│                   │   ├── provider.ts
-│                   │   ├── prompts.ts
-│                   │   └── tool-loop.ts
-│                   ├── tools/
-│                   │   ├── registry.ts
-│                   │   ├── catalog.ts
-│                   │   ├── schemas.ts
-│                   │   ├── executor.ts
-│                   │   ├── guardrails.ts
-│                   │   └── implementations/
-│                   │       ├── get-repository-context.ts
-│                   │       ├── search-code.ts
-│                   │       ├── get-symbol.ts
-│                   │       ├── query-code-relationships.ts
-│                   │       ├── get-historical-changes.ts
-│                   │       ├── get-test-intelligence.ts
-│                   │       ├── analyze-change.ts
-│                   │       ├── get-impact.ts
-│                   │       ├── get-risk.ts
-│                   │       ├── get-test-impact.ts
-│                   │       └── get-evidence.ts
-│                   ├── workflows/
-│                   │   ├── prepare-repository.ts
-│                   │   ├── investigate-change.ts
-│                   │   └── finalize-review.ts
-│                   ├── conversations/
-│                   │   └── service.ts               # Session/turn orchestration via Rust gRPC
-│                   ├── memory/
-│                   │   ├── service.ts
-│                   │   ├── policy.ts
-│                   │   ├── retrieval.ts
-│                   │   └── freshness.ts
-│                   ├── handoffs/
-│                   │   ├── service.ts
-│                   │   └── schema.ts
-│                   ├── operations/
-│                   │   ├── service.ts
-│                   │   ├── state.ts
-│                   │   ├── events.ts
-│                   │   └── sse.ts
-│                   ├── results/
-│                   │   ├── canonical-json.ts
-│                   │   ├── validate.ts
-│                   │   ├── llm-projection.ts
-│                   │   ├── llm-encoding.ts
-│                   │   ├── llm-encoding.test.ts
-│                   │   └── ui-projection.ts
-│                   ├── rust-client/
-│                   │   ├── client.ts
-│                   │   ├── progress-stream.ts
-│                   │   └── generated/       # Generated; never hand-edit
-│                   ├── auth/
-│                   │   ├── context.ts
-│                   │   └── authorize.ts
-│                   └── config/
-│                       └── env.ts
-│
-├── proto/
-│     └── v1/
-│         ├── common.proto
-│         ├── repository.proto
-│         ├── intelligence.proto
-│         ├── memory.proto
-│         └── operation.proto
-│
-├── engine/
+│       ├── tsconfig.tsbuildinfo
+│       └── vitest.config.ts
+├── docs
+│   ├── architecture.md
+│   ├── demo.md
+│   ├── design
+│   │   ├── CodeMind AI Code Analysis Dashboard.png
+│   │   ├── CodeMind AI Settings Dashboard.png
+│   │   ├── CodeMind Agent Execution Dashboard.png
+│   │   ├── CodeMind Control Plane Impact Dashboard.png
+│   │   ├── CodeMind Conversation Search Interface.png
+│   │   ├── CodeMind Dark Design System Board.png
+│   │   ├── CodeMind Error States Dashboard.png
+│   │   ├── CodeMind Help & Docs Dashboard.png
+│   │   ├── CodeMind Pipeline Analysis Dashboard (1).png
+│   │   ├── CodeMind Pipeline Analysis Dashboard.png
+│   │   ├── CodeMind Repository Dashboard.png
+│   │   ├── CodeMind Repository Setup Dashboard.png
+│   │   ├── CodeMind Settings Dashboard.png
+│   │   ├── CodeMind Zero-Risk Analysis Dashboard.png
+│   │   ├── Developer AI Dashboard UI Mockup.png
+│   │   └── README.md
+│   ├── design-system.md
+│   ├── implementation-plan.md
+│   └── testing.md
+├── engine
+│   ├── Cargo.lock
 │   ├── Cargo.toml
 │   ├── build.rs
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── lib.rs
+│   ├── cargo-check.log
+│   ├── src
 │   │   ├── config.rs
-│   │   ├── transport/
-│   │   │   ├── mod.rs
-│   │   │   ├── server.rs
-│   │   │   ├── progress.rs
-│   │   │   └── conversions.rs
-│   │   ├── contract/
-│   │   │   ├── mod.rs
+│   │   ├── contract
 │   │   │   ├── context.rs
-│   │   │   ├── repository.rs
+│   │   │   ├── error.rs
+│   │   │   ├── events.rs
 │   │   │   ├── intelligence.rs
 │   │   │   ├── memory.rs
+│   │   │   ├── mod.rs
 │   │   │   ├── operation.rs
-│   │   │   ├── result.rs
+│   │   │   ├── repository.rs
+│   │   │   └── result.rs
+│   │   ├── engines
+│   │   │   ├── chie
+│   │   │   │   ├── change_set.rs
+│   │   │   │   ├── engine.rs
+│   │   │   │   ├── evidence.rs
+│   │   │   │   ├── graph_builder.rs
+│   │   │   │   ├── impact
+│   │   │   │   │   ├── aggregation.rs
+│   │   │   │   │   ├── mod.rs
+│   │   │   │   │   └── traversal.rs
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── model.rs
+│   │   │   │   ├── queries.rs
+│   │   │   │   ├── risk
+│   │   │   │   │   ├── assessment.rs
+│   │   │   │   │   ├── factors.rs
+│   │   │   │   │   └── mod.rs
+│   │   │   │   └── test_impact.rs
+│   │   │   ├── coie
+│   │   │   │   ├── engine.rs
+│   │   │   │   ├── extraction
+│   │   │   │   │   ├── evidence.rs
+│   │   │   │   │   ├── mod.rs
+│   │   │   │   │   ├── normalize.rs
+│   │   │   │   │   ├── resolve.rs
+│   │   │   │   │   └── validate.rs
+│   │   │   │   ├── graph_builder.rs
+│   │   │   │   ├── languages
+│   │   │   │   │   ├── javascript.rs
+│   │   │   │   │   ├── mod.rs
+│   │   │   │   │   ├── python.rs
+│   │   │   │   │   ├── rust.rs
+│   │   │   │   │   └── typescript.rs
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── model.rs
+│   │   │   │   └── queries
+│   │   │   │       ├── history.rs
+│   │   │   │       ├── mod.rs
+│   │   │   │       ├── paths.rs
+│   │   │   │       ├── relationships.rs
+│   │   │   │       ├── search.rs
+│   │   │   │       └── symbols.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── pipeline.rs
+│   │   │   └── tie
+│   │   │       ├── discovery
+│   │   │       │   ├── javascript_tests.rs
+│   │   │       │   ├── mod.rs
+│   │   │       │   ├── python_tests.rs
+│   │   │       │   ├── rust_tests.rs
+│   │   │       │   └── typescript_tests.rs
+│   │   │       ├── engine.rs
+│   │   │       ├── graph_builder.rs
+│   │   │       ├── mapping
+│   │   │       │   ├── evidence.rs
+│   │   │       │   ├── mod.rs
+│   │   │       │   └── target_mapping.rs
+│   │   │       ├── mod.rs
+│   │   │       ├── model.rs
+│   │   │       └── queries
+│   │   │           ├── mod.rs
+│   │   │           └── tests.rs
+│   │   ├── graph_storage
+│   │   │   ├── falkordb
+│   │   │   │   ├── client.rs
+│   │   │   │   ├── mapping.rs
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── read.rs
+│   │   │   │   ├── schema.rs
+│   │   │   │   └── write.rs
+│   │   │   ├── mod.rs
+│   │   │   └── port.rs
+│   │   ├── lib.rs
+│   │   ├── lifecycle
 │   │   │   ├── events.rs
-│   │   │   └── error.rs
-│   │   ├── source/
+│   │   │   ├── mod.rs
+│   │   │   ├── operation.rs
+│   │   │   ├── progress.rs
+│   │   │   └── recovery.rs
+│   │   ├── main.rs
+│   │   ├── memory
+│   │   │   ├── handoffs.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── model.rs
+│   │   │   ├── repository.rs
+│   │   │   ├── scope.rs
+│   │   │   ├── service.rs
+│   │   │   └── validation.rs
+│   │   ├── source
+│   │   │   ├── identity.rs
+│   │   │   ├── language.rs
+│   │   │   ├── limits.rs
+│   │   │   ├── manifest.rs
 │   │   │   ├── mod.rs
 │   │   │   ├── provider.rs
 │   │   │   ├── snapshot.rs
-│   │   │   ├── manifest.rs
-│   │   │   ├── language.rs
-│   │   │   ├── limits.rs
 │   │   │   └── tree_sitter.rs
-│   │   ├── engines/
-│   │   │   ├── mod.rs
-│   │   │   ├── pipeline.rs
-│   │   │   ├── coie/
-│   │   │   │   ├── mod.rs
-│   │   │   │   ├── engine.rs
-│   │   │   │   ├── model.rs
-│   │   │   │   ├── graph_builder.rs
-│   │   │   │   ├── extraction/
-│   │   │   │   │   ├── mod.rs
-│   │   │   │   │   ├── normalize.rs
-│   │   │   │   │   ├── validate.rs
-│   │   │   │   │   ├── resolve.rs
-│   │   │   │   │   └── evidence.rs
-│   │   │   │   ├── languages/
-│   │   │   │   │   ├── mod.rs
-│   │   │   │   │   ├── rust.rs
-│   │   │   │   │   ├── javascript.rs
-│   │   │   │   │   ├── typescript.rs
-│   │   │   │   │   └── python.rs
-│   │   │   │   └── queries/
-│   │   │   │       ├── mod.rs
-│   │   │   │       ├── symbols.rs
-│   │   │   │       ├── search.rs
-│   │   │   │       ├── relationships.rs
-│   │   │   │       ├── paths.rs
-│   │   │   │       └── history.rs
-│   │   │   ├── tie/
-│   │   │   │   ├── mod.rs
-│   │   │   │   ├── engine.rs
-│   │   │   │   ├── model.rs
-│   │   │   │   ├── graph_builder.rs
-│   │   │   │   ├── discovery/
-│   │   │   │   │   ├── mod.rs
-│   │   │   │   │   ├── rust_tests.rs
-│   │   │   │   │   ├── javascript_tests.rs
-│   │   │   │   │   ├── typescript_tests.rs
-│   │   │   │   │   └── python_tests.rs
-│   │   │   │   ├── mapping/
-│   │   │   │   │   ├── mod.rs
-│   │   │   │   │   ├── target_mapping.rs
-│   │   │   │   │   └── evidence.rs
-│   │   │   │   └── queries/
-│   │   │   │       ├── mod.rs
-│   │   │   │       └── tests.rs
-│   │   │   └── chie/
-│   │   │       ├── mod.rs
-│   │   │       ├── engine.rs
-│   │   │       ├── model.rs
-│   │   │       ├── change_set.rs
-│   │   │       ├── graph_builder.rs
-│   │   │       ├── impact/
-│   │   │       │   ├── mod.rs
-│   │   │       │   ├── traversal.rs
-│   │   │       │   └── aggregation.rs
-│   │   │       ├── risk/
-│   │   │       │   ├── mod.rs
-│   │   │       │   ├── factors.rs
-│   │   │       │   └── assessment.rs
-│   │   │       ├── test_impact.rs
-│   │   │       ├── evidence.rs
-│   │   │       └── queries.rs
-│   │   ├── graph_storage/
-│   │   │   ├── mod.rs
-│   │   │   ├── port.rs
-│   │   │   └── falkordb/
-│   │   │       ├── mod.rs
-│   │   │       ├── client.rs
-│   │   │       ├── schema.rs
-│   │   │       ├── read.rs
-│   │   │       ├── write.rs
-│   │   │       └── mapping.rs
-│   │   ├── memory/
-│   │   │   ├── mod.rs
-│   │   │   ├── model.rs
-│   │   │   ├── service.rs
-│   │   │   ├── scope.rs
-│   │   │   ├── validation.rs
-│   │   │   ├── repository.rs
-│   │   │   └── handoffs.rs
-│   │   └── lifecycle/
+│   │   └── transport
+│   │       ├── conversions.rs
 │   │       ├── mod.rs
-│   │       ├── operation.rs
 │   │       ├── progress.rs
-│   │       ├── events.rs
-│   │       └── recovery.rs
-│   └── tests/
+│   │       └── server.rs
+│   └── tests
+│       ├── bounded_queries.rs
 │       ├── canonical_graph.rs
-│       ├── language_adapters.rs
+│       ├── chie_impact.rs
+│       ├── day1_boundaries.rs
 │       ├── falkordb_integration.rs
 │       ├── grpc_contract.rs
-│       ├── chie_impact.rs
-│       ├── tie_discovery.rs
-│       ├── memory_persistence.rs
 │       ├── handoff_lifecycle.rs
-│       └── operation_recovery.rs
-│
-│
-├── docs/
-│   ├── architecture.md
-│   ├── testing.md
-│   ├── design-system.md
-│   ├── demo.md
-│   ├── implementation-plan.md
-│   └── design/                         # Approved reference images, using their real filenames
-│       └── README.md                   # Inventory and screen/state mapping for those images
-│
-└── scripts/
-    ├── setup.sh
+│       ├── language_adapters.rs
+│       ├── level3_engines.rs
+│       ├── level3_memory.rs
+│       ├── level3_operation_grpc.rs
+│       ├── level3_storage.rs
+│       ├── level3_transport.rs
+│       ├── memory_persistence.rs
+│       ├── operation_recovery.rs
+│       ├── support.rs
+│       └── tie_discovery.rs
+├── proto
+│   └── v1
+│       ├── common.proto
+│       ├── intelligence.proto
+│       ├── memory.proto
+│       ├── operation.proto
+│       └── repository.proto
+└── scripts
     ├── generate-proto.sh
     ├── run-e2e.sh
-    └── verify-clean-start.sh
+    ├── run-level3.sh
+    ├── setup.sh
+    └── verify-clean-start.sh 
 ```
 
 There is deliberately **no root `fixtures/` directory**. Test repositories or source snippets needed for automated tests should be isolated temporary inputs and must not become a product dependency.
@@ -794,7 +868,7 @@ Authorization and repository/snapshot context come from trusted runtime state.
 ## Documentation
 
 | Document | Responsibility |
-|---|---|
+| --- | --- |
 | `AGENTS.md` | Non-negotiable implementation rules |
 | `docs/architecture.md` | Frozen architecture and domain semantics |
 | `docs/implementation-plan.md` | Four-day file-by-file implementation plan |
