@@ -1,11 +1,13 @@
 use super::{
+    change_set::{AnalysisRun, ChangeSelectionKind},
+    evidence, graph_builder,
     impact::{aggregation, traversal},
-    model::ChangeAnalysis,
-    risk::{assessment, factors::RiskFactors},
+    model::{ChangeAnalysis, ChangeRecord, EvidenceAvailability, ImpactAnalysis},
+    risk::{assessment, factors::*},
     test_impact,
 };
 use crate::engines::{
-    coie::model::CodeGraph,
+    coie::model::{CodeGraph, EntityKind},
     tie::model::{TestEntity, TestRelationship},
 };
 
@@ -28,6 +30,25 @@ impl ChieEngine {
         test_relationships: &[TestRelationship],
         selected_entity_id: &str,
     ) -> Result<ChangeAnalysis, String> {
+        graph
+            .context
+            .validate()
+            .map_err(|error| error.to_string())?;
+
+        let selected = graph
+            .entities
+            .iter()
+            .find(|entity| entity.id == selected_entity_id)
+            .ok_or_else(|| "selected symbol or file does not exist in the code graph".to_owned())?;
+
+        if selected.context != graph.context {
+            return Err("selected entity context does not match graph context".to_owned());
+        }
+
+        if !matches!(selected.kind, EntityKind::Symbol | EntityKind::File) {
+            return Err("change analysis requires a symbol or file target".to_owned());
+        }
+
         if tests.iter().any(|test| test.context != graph.context)
             || test_relationships
                 .iter()
@@ -35,6 +56,7 @@ impl ChieEngine {
         {
             return Err("test graph context does not match code graph context".to_owned());
         }
+
         let mut paths = aggregation::deduplicate(traversal::traverse(
             &graph.relationships,
             selected_entity_id,
@@ -42,48 +64,148 @@ impl ChieEngine {
         ));
         let truncated = paths.len() > crate::contract::result::MAX_PATHS;
         paths.truncate(crate::contract::result::MAX_PATHS);
-        let impacted_names: Vec<_> = paths
-            .iter()
-            .filter_map(|path| {
-                graph
-                    .entities
-                    .iter()
-                    .find(|entity| entity.id == path.entity_id)
-            })
-            .map(|entity| entity.name.clone())
-            .collect();
-        let candidates = test_impact::candidates(tests, test_relationships, &impacted_names);
+
+        let impacted_ids: Vec<String> = paths.iter().map(|path| path.entity_id.clone()).collect();
+        let candidates = test_impact::candidates(tests, test_relationships, &impacted_ids);
+
         let maximum_depth = paths.iter().map(|path| path.depth).max().unwrap_or(0);
-        let risk = assessment::assess(RiskFactors {
-            impacted_entities: paths.len(),
-            maximum_depth,
-            has_test_evidence: !candidates.is_empty(),
-            has_graph_evidence: !paths.is_empty(),
-        });
-        let evidence = paths
-            .iter()
-            .flat_map(|path| {
-                path.relationships
-                    .iter()
-                    .map(|relationship| relationship.id.clone())
+        let graph_evidence = if paths.iter().all(|path| {
+            path.relationships.iter().all(|relationship| {
+                relationship.evidence.is_some()
+                    && matches!(
+                        relationship.resolution,
+                        crate::engines::coie::model::ResolutionStatus::Resolved
+                    )
             })
-            .collect();
-        let mut limitations = vec![
-            "Analysis uses bounded static CALLS and IMPORTS relationships.".to_owned(),
-            "Static test declarations are not runtime coverage evidence.".to_owned(),
-        ];
-        if truncated {
-            limitations.push("Impact paths were truncated at the maximum path limit.".to_owned());
-        }
-        Ok(ChangeAnalysis {
+        }) && !paths.is_empty()
+        {
+            EvidenceAvailability::Verified
+        } else if !paths.is_empty() {
+            EvidenceAvailability::Partial
+        } else {
+            EvidenceAvailability::Unknown
+        };
+
+        let risk_assessment = assessment::assess(RiskFactors {
+            structural: StructuralExposure {
+                impacted_entities: paths.len(),
+                maximum_depth,
+                state: FactorState::Supported,
+            },
+            validation: ValidationEvidence {
+                test_candidates: candidates.len(),
+                graph_evidence,
+            },
+            historical: HistoricalInstability {
+                available: false,
+                elevated: false,
+            },
+            criticality: CriticalityPolicy {
+                known: false,
+                critical: false,
+            },
+            change: ChangeCharacteristics {
+                selection_is_symbol: matches!(selected.kind, EntityKind::Symbol),
+                dependency_edges: paths.len(),
+            },
+        });
+
+        let mut analysis = ChangeAnalysis {
             context: graph.context.clone(),
             selected_entity_id: selected_entity_id.to_owned(),
-            impact_paths: paths,
+            impact_paths: paths.clone(),
             test_candidates: candidates,
-            risk,
-            evidence,
-            limitations,
+            risk: risk_assessment.level,
+            risk_assessment: Some(risk_assessment),
+            impact: Some(ImpactAnalysis {
+                impacted_entity_ids: impacted_ids,
+                paths,
+                evidence: Vec::new(),
+                availability: graph_evidence,
+                truncated,
+            }),
+            evidence: Vec::new(),
+            evidence_records: Vec::new(),
+            limitations: vec![
+                "Impact is derived from bounded static dependency relationships.".to_owned(),
+                "Static test declarations are not runtime coverage evidence.".to_owned(),
+                "Historical instability and criticality policy were not available in this analysis.".to_owned(),
+            ],
             truncated,
+        };
+
+        if truncated {
+            analysis
+                .limitations
+                .push("Impact paths were truncated at the maximum path limit.".to_owned());
+        }
+
+        analysis.evidence_records = evidence::build(&analysis);
+        analysis.evidence = analysis
+            .evidence_records
+            .iter()
+            .filter_map(|record| record.relationship_id.clone())
+            .collect();
+
+        if let Some(impact) = analysis.impact.as_mut() {
+            impact.evidence = analysis
+                .evidence_records
+                .iter()
+                .filter_map(|record| record.source.clone())
+                .collect();
+        }
+
+        graph_builder::validate(&analysis)?;
+        Ok(analysis)
+    }
+
+    pub fn change_record(
+        &self,
+        change_set_id: &str,
+        graph: &CodeGraph,
+        selected_entity_id: &str,
+    ) -> Result<ChangeRecord, String> {
+        let entity = graph
+            .entities
+            .iter()
+            .find(|entity| entity.id == selected_entity_id)
+            .ok_or_else(|| "selected entity not found".to_owned())?;
+
+        let selection_kind = match entity.kind {
+            EntityKind::Symbol => ChangeSelectionKind::Symbol,
+            EntityKind::File => ChangeSelectionKind::File,
+            _ => return Err("selected entity is not a supported change target".to_owned()),
+        };
+
+        Ok(ChangeRecord {
+            change_set_id: change_set_id.to_owned(),
+            selected_entity_id: selected_entity_id.to_owned(),
+            context: graph.context.clone(),
+            selection_kind: match selection_kind {
+                ChangeSelectionKind::Symbol => "symbol",
+                ChangeSelectionKind::File => "file",
+            }
+            .to_owned(),
+            source: entity.evidence.clone(),
         })
+    }
+
+    pub fn analysis_run(
+        &self,
+        id: &str,
+        change_set_id: &str,
+        context: crate::source::RepositoryContext,
+        started_at: &str,
+    ) -> Result<AnalysisRun, String> {
+        let run = AnalysisRun {
+            id: id.to_owned(),
+            change_set_id: change_set_id.to_owned(),
+            context,
+            status: "completed".to_owned(),
+            started_at: started_at.to_owned(),
+            completed_at: Some(started_at.to_owned()),
+        };
+        run.validate()?;
+        Ok(run)
     }
 }

@@ -42,6 +42,18 @@ fn snapshot_changes_when_source_changes() {
 }
 
 #[test]
+fn extraction_uses_pinned_snapshot_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("main.rs"), "fn original() {}\n").unwrap();
+    let snapshot = SourceProvider::default()
+        .resolve(root.path(), "workspace-a")
+        .unwrap();
+    fs::write(root.path().join("main.rs"), "fn changed() {}\n").unwrap();
+
+    assert_eq!(snapshot.file_text("main.rs").unwrap(), "fn original() {}\n");
+}
+
+#[test]
 fn tree_sitter_extracts_source_located_declarations_and_calls() {
     let cases = [
         (

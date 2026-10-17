@@ -23,6 +23,14 @@ fn relationship(context: RepositoryContext, id: &str, from: &str) -> GraphRelati
         from: from.to_owned(),
         to: "target".to_owned(),
         context,
+        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
+            path: "src/lib.rs".to_owned(),
+            start_line: 1,
+            end_line: 1,
+            snapshot_id: "snapshot".to_owned(),
+            provenance: "test".to_owned(),
+        }),
     }
 }
 

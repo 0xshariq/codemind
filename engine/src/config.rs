@@ -16,25 +16,51 @@ impl Config {
             .unwrap_or_else(|_| "50051".to_owned())
             .parse::<u16>()
             .context("CODEMIND_ENGINE_PORT must be a valid TCP port")?;
+        let falkordb_url =
+            env::var("FALKORDB_URL").unwrap_or_else(|_| "redis://127.0.0.1:6380".to_owned());
+        let falkordb_graph = env::var("FALKORDB_GRAPH").unwrap_or_else(|_| "codemind".to_owned());
+        Self::from_values(&host, port, &falkordb_url, &falkordb_graph)
+    }
+
+    fn from_values(
+        host: &str,
+        port: u16,
+        falkordb_url: &str,
+        falkordb_graph: &str,
+    ) -> Result<Self> {
+        if host.trim().is_empty() {
+            return Err(anyhow!("CODEMIND_ENGINE_HOST must not be empty"));
+        }
+        if port == 0 {
+            return Err(anyhow!("CODEMIND_ENGINE_PORT must be greater than zero"));
+        }
         let engine_addr = format!("{host}:{port}")
             .parse()
             .with_context(|| format!("invalid engine address {host}:{port}"))?;
-
-        let falkordb_url =
-            env::var("FALKORDB_URL").unwrap_or_else(|_| "redis://127.0.0.1:6380".to_owned());
-        if !falkordb_url.starts_with("redis://") && !falkordb_url.starts_with("rediss://") {
+        if !matches!(
+            falkordb_url.split_once("://").map(|(scheme, _)| scheme),
+            Some("redis" | "rediss")
+        ) {
             return Err(anyhow!("FALKORDB_URL must use redis:// or rediss://"));
         }
-
-        let falkordb_graph = env::var("FALKORDB_GRAPH").unwrap_or_else(|_| "codemind".to_owned());
+        if falkordb_url.ends_with("://") {
+            return Err(anyhow!("FALKORDB_URL must include a host"));
+        }
         if falkordb_graph.trim().is_empty() {
             return Err(anyhow!("FALKORDB_GRAPH must not be empty"));
+        }
+        if !falkordb_graph.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        }) {
+            return Err(anyhow!(
+                "FALKORDB_GRAPH may contain only ASCII letters, numbers, '_' or '-'"
+            ));
         }
 
         Ok(Self {
             engine_addr,
-            falkordb_url,
-            falkordb_graph,
+            falkordb_url: falkordb_url.to_owned(),
+            falkordb_graph: falkordb_graph.to_owned(),
         })
     }
 }
@@ -45,8 +71,21 @@ mod tests {
 
     #[test]
     fn defaults_are_valid_for_local_development() {
-        let config = Config::from_env().expect("local defaults should be valid");
+        let config = Config::from_values("127.0.0.1", 50051, "redis://127.0.0.1:6380", "codemind")
+            .expect("local defaults should be valid");
         assert_eq!(config.engine_addr.port(), 50051);
         assert_eq!(config.falkordb_graph, "codemind");
+    }
+
+    #[test]
+    fn rejects_invalid_values_without_environment_mutation() {
+        assert!(Config::from_values("", 50051, "redis://127.0.0.1:6380", "codemind").is_err());
+        assert!(Config::from_values("127.0.0.1", 0, "redis://127.0.0.1:6380", "codemind").is_err());
+        assert!(
+            Config::from_values("127.0.0.1", 50051, "http://127.0.0.1:6380", "codemind").is_err()
+        );
+        assert!(
+            Config::from_values("127.0.0.1", 50051, "redis://127.0.0.1:6380", "bad name").is_err()
+        );
     }
 }

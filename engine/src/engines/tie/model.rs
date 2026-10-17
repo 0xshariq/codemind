@@ -1,3 +1,4 @@
+use crate::engines::coie::model::SourceEvidence;
 use crate::source::RepositoryContext;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,14 @@ pub enum TestRelationshipKind {
     Targets,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestResolution {
+    Resolved,
+    Unresolved,
+    Ambiguous,
+    Unsupported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestEntity {
     pub id: String,
@@ -27,9 +36,13 @@ pub struct TestEntity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestRelationship {
+    pub id: String,
     pub kind: TestRelationshipKind,
     pub test_id: String,
     pub target_symbol_name: Option<String>,
+    pub entity_id: Option<String>,
     pub evidence_path: String,
+    pub evidence: Option<SourceEvidence>,
+    pub resolution: TestResolution,
     pub context: RepositoryContext,
 }
