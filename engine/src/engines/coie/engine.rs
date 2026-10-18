@@ -83,6 +83,7 @@ impl CoieEngine {
         let mut directory_ids = HashMap::new();
         let mut parsed_files = Vec::new();
         let mut imports_by_path: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+        let mut parsed_imports_by_path = Vec::new();
 
         for entry in &snapshot.manifest.files {
             let file_id = entity_id(&snapshot.context.source_snapshot_id, &entry.path, "file");
@@ -212,24 +213,8 @@ impl CoieEngine {
                     [target_path] => {
                         imported_targets.push((target_path.clone(), imported_symbol.clone()));
 
-                        if let Some(target_id) = file_ids.get(target_path) {
-                            let ev = evidence::from_range(
-                                &entry.path,
-                                import.range.start_line,
-                                import.range.end_line,
-                                &snapshot.context.source_snapshot_id,
-                                tree_sitter::TREE_SITTER_ADAPTER_VERSION,
-                            );
-
-                            graph.relationships.push(relationship(
-                                &file_id,
-                                target_id,
-                                RelationshipKind::Imports,
-                                snapshot,
-                                Some(ev),
-                                ResolutionStatus::Resolved,
-                            ));
-                        }
+                        // Import relationships are emitted after every file ID has been
+                        // registered so repository file order cannot drop valid edges.
                     }
 
                     [] => graph.diagnostics.push(Diagnostic {
@@ -267,7 +252,40 @@ impl CoieEngine {
             imported_targets.dedup();
 
             imports_by_path.insert(entry.path.clone(), imported_targets);
+            parsed_imports_by_path.push((
+                entry.path.clone(),
+                language,
+                parsed.import_details.clone(),
+            ));
             parsed_files.push((entry.path.clone(), parsed));
+        }
+
+        for (path, language, imports) in parsed_imports_by_path {
+            let Some(file_id) = file_ids.get(&path) else {
+                continue;
+            };
+            for import in imports {
+                let targets = resolve_import_paths(snapshot, &path, language, &import.text);
+                if let [target_path] = targets.as_slice()
+                    && let Some(target_id) = file_ids.get(target_path)
+                {
+                    let ev = evidence::from_range(
+                        &path,
+                        import.range.start_line,
+                        import.range.end_line,
+                        &snapshot.context.source_snapshot_id,
+                        tree_sitter::TREE_SITTER_ADAPTER_VERSION,
+                    );
+                    graph.relationships.push(relationship(
+                        file_id,
+                        target_id,
+                        RelationshipKind::Imports,
+                        snapshot,
+                        Some(ev),
+                        ResolutionStatus::Resolved,
+                    ));
+                }
+            }
         }
 
         for (path, parsed) in parsed_files {
@@ -749,7 +767,11 @@ fn import_path_candidates(
         | crate::source::Language::TypeScript
         | crate::source::Language::Tsx => {
             if specifier.starts_with('.') {
-                vec![current_parent.join(specifier)]
+                let joined = current_parent.join(specifier);
+                let Some(normalized) = normalize_import_path(&joined) else {
+                    return Vec::new();
+                };
+                vec![PathBuf::from(normalized)]
             } else {
                 return Vec::new();
             }
@@ -784,6 +806,26 @@ fn import_path_candidates(
     }
 
     result
+}
+
+fn normalize_import_path(path: &Path) -> Option<String> {
+    use std::path::Component;
+
+    let mut components = Vec::<String>::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                components.pop()?;
+            }
+            Component::Normal(value) => components.push(value.to_str()?.to_owned()),
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    Some(components.join("/"))
 }
 
 fn rust_module_path(current_path: &str, specifier: &str) -> PathBuf {
@@ -874,6 +916,47 @@ mod tests {
         source::SourceProvider,
     };
     use std::fs;
+
+    #[test]
+    fn normalizes_relative_imports_and_builds_edges_independent_of_file_order() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(
+            root.path().join("src/a.ts"),
+            "import { helper } from './lib/../b';\nexport function caller() { helper(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("src/b.ts"),
+            "export function helper() {}\n",
+        )
+        .unwrap();
+
+        let snapshot = SourceProvider::default()
+            .resolve(root.path(), "coie-relative-import-test")
+            .unwrap();
+        let graph = CoieEngine.extract(&snapshot).unwrap();
+
+        assert!(graph.relationships.iter().any(|relationship| {
+            relationship.kind == RelationshipKind::Imports
+                && graph
+                    .entities
+                    .iter()
+                    .any(|entity| entity.id == relationship.from && entity.path == "src/a.ts")
+                && graph
+                    .entities
+                    .iter()
+                    .any(|entity| entity.id == relationship.to && entity.path == "src/b.ts")
+        }));
+        assert!(graph.relationships.iter().any(|relationship| {
+            relationship.kind == RelationshipKind::Calls
+                && graph.entities.iter().any(|entity| {
+                    entity.id == relationship.to
+                        && entity.path == "src/b.ts"
+                        && entity.name == "helper"
+                })
+        }));
+    }
 
     #[test]
     fn extracts_imports_and_cross_file_calls_without_guessing_unimported_symbols() {

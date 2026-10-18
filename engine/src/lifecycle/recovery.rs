@@ -57,13 +57,16 @@ pub async fn recover_from_storage<S: crate::graph_storage::GraphStorage>(
     let events = storage
         .events_since(context, operation_id, after_sequence, limit)
         .await?;
+
     let snapshot = RecoverySnapshot {
         operation: Operation { record },
         events,
     };
+
     snapshot
         .validate()
         .map_err(crate::graph_storage::StorageError::Query)?;
+
     Ok(snapshot)
 }
 
@@ -73,6 +76,37 @@ mod tests {
     use crate::{contract::events::EngineEvent, source::RepositoryContext};
 
     #[test]
+    fn recovery_accepts_a_terminal_event_persisted_with_its_record_sequence() {
+        let context = RepositoryContext {
+            repository_id: "repo".into(),
+            workspace_id: "workspace".into(),
+            source_snapshot_id: "snapshot".into(),
+            graph_version: "graph".into(),
+        };
+
+        let mut operation = Operation::new("op", "request", "trace", context).unwrap();
+
+        operation.record.result_reference = Some("result".into());
+
+        operation
+            .transition(crate::contract::operation::OperationState::Running)
+            .unwrap();
+
+        operation
+            .transition(crate::contract::operation::OperationState::Completed)
+            .unwrap();
+
+        let event = operation.completed_event().unwrap();
+
+        let snapshot = RecoverySnapshot {
+            operation,
+            events: vec![event],
+        };
+
+        assert!(snapshot.validate().is_ok());
+    }
+
+    #[test]
     fn recovery_rejects_events_from_another_operation() {
         let context = RepositoryContext {
             repository_id: "repo".into(),
@@ -80,21 +114,29 @@ mod tests {
             source_snapshot_id: "snapshot".into(),
             graph_version: "graph".into(),
         };
+
         let mut operation = Operation::new("op", "request", "trace", context.clone()).unwrap();
+
         let event = operation.begin_stage("coie").unwrap();
+
         let mut other = Operation::new("other", "request", "trace", context).unwrap();
+
         let other_event = other.begin_stage("coie").unwrap();
+
         let engine_event = EngineEvent::Progress {
             metadata: other_event.metadata,
             engine: "codemind".into(),
             stage: "coie".into(),
             message: "other".into(),
         };
+
         let snapshot = RecoverySnapshot {
             operation,
             events: vec![engine_event],
         };
+
         assert!(snapshot.validate().is_err());
+
         let _ = event;
     }
 }

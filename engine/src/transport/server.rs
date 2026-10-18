@@ -140,8 +140,15 @@ where
             trace_id,
             operation_id: Some(operation_id.clone()),
         };
+        let pipeline_operation_id = operation_id.clone();
         tokio::spawn(async move {
-            let _ = pipeline.run(pipeline_request).await;
+            if let Err(error) = pipeline.run(pipeline_request).await {
+                tracing::error!(
+                    %pipeline_operation_id,
+                    %error,
+                    "CodeMind investigation pipeline failed"
+                );
+            }
         });
 
         Ok(Response::new(generated::StartInvestigationResponse {
@@ -719,7 +726,7 @@ where
             .map_err(storage_status)?
             .ok_or_else(|| Status::not_found("selected symbol or file was not found"))?;
 
-        let paths = self
+        let dependency_paths = self
             .storage
             .dependency_paths_for(
                 &context,
@@ -729,6 +736,7 @@ where
             )
             .await
             .map_err(storage_status)?;
+        let paths = dependency_paths.paths;
 
         let mut entity_ids = vec![selected.id.clone()];
         let mut relationships = Vec::new();
@@ -780,7 +788,7 @@ where
             diagnostics: Vec::new(),
         };
 
-        let analysis = ChieEngine {
+        let mut analysis = ChieEngine {
             max_depth: input.max_depth as usize,
         }
         .analyze(
@@ -790,6 +798,16 @@ where
             &selected.id,
         )
         .map_err(Status::failed_precondition)?;
+        if dependency_paths.truncated {
+            analysis.truncated = true;
+            if let Some(impact) = analysis.impact.as_mut() {
+                impact.truncated = true;
+                impact.availability = crate::engines::chie::model::EvidenceAvailability::Partial;
+            }
+            analysis.limitations.push(
+                "Storage dependency paths were truncated at the bounded read limit.".to_owned(),
+            );
+        }
 
         let data_json = serde_json::to_string(&analysis)
             .map_err(|error| Status::internal(error.to_string()))?;

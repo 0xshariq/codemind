@@ -13,6 +13,10 @@ use tonic::transport::Server;
 #[tokio::test]
 #[ignore = "requires GitHub access; run with --ignored"]
 async fn repository_grpc_service_reads_the_github_repository_boundary() {
+    if !support::github_repository_exists() {
+        return;
+    }
+
     let (_temp, root) = support::fetch_github_repository();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

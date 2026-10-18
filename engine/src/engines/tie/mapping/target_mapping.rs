@@ -20,11 +20,11 @@ pub fn resolve_target(
                 && entity.context == code_graph.context
         })
         .collect();
-    match same_file.as_slice() {
-        [entity] => return (Some(entity.id.clone()), TestResolution::Resolved),
-        [] => {}
+    let same_file_candidate = match same_file.as_slice() {
+        [entity] => Some(*entity),
+        [] => None,
         _ => return (None, TestResolution::Ambiguous),
-    }
+    };
 
     let imported_file_ids: Vec<&str> = code_graph
         .entities
@@ -68,13 +68,28 @@ pub fn resolve_target(
             })
             .collect();
         match imported_targets.as_slice() {
-            [entity] => return (Some(entity.id.clone()), TestResolution::Resolved),
-            [] => return (None, TestResolution::Unresolved),
+            [entity] if same_file_candidate.is_none() => {
+                return (Some(entity.id.clone()), TestResolution::Resolved);
+            }
+            [entity] => {
+                // The graph does not retain lexical binding/scope information
+                // for this test call. Do not guess between a local symbol and
+                // an imported symbol with the same name.
+                let _ = entity;
+                return (None, TestResolution::Ambiguous);
+            }
+            [] => {
+                if same_file_candidate.is_none() {
+                    return (None, TestResolution::Unresolved);
+                }
+            }
             _ => return (None, TestResolution::Ambiguous),
         }
     }
 
-    (None, TestResolution::Unresolved)
+    same_file_candidate
+        .map(|entity| (Some(entity.id.clone()), TestResolution::Resolved))
+        .unwrap_or((None, TestResolution::Unresolved))
 }
 
 pub fn resolve_graph(
@@ -143,6 +158,82 @@ mod tests {
             source_snapshot_id: "snapshot".into(),
             graph_version: "graph".into(),
         }
+    }
+
+    #[test]
+    fn target_resolution_does_not_guess_between_local_and_imported_same_name() {
+        let local_method = GraphEntity {
+            id: "local-method".into(),
+            kind: EntityKind::Symbol,
+            name: "helper".into(),
+            path: "src/a.py".into(),
+            line: 10,
+            context: context(),
+            language: None,
+            native_kind: Some("function_definition".into()),
+            range: None,
+            resolution: ResolutionStatus::Resolved,
+            evidence: None,
+        };
+        let source = GraphEntity {
+            id: "file-a".into(),
+            kind: EntityKind::File,
+            name: "src/a.py".into(),
+            path: "src/a.py".into(),
+            line: 1,
+            context: context(),
+            language: None,
+            native_kind: Some("file".into()),
+            range: None,
+            resolution: ResolutionStatus::Resolved,
+            evidence: None,
+        };
+        let imported_file = GraphEntity {
+            id: "file-b".into(),
+            kind: EntityKind::File,
+            name: "src/b.py".into(),
+            path: "src/b.py".into(),
+            line: 1,
+            context: context(),
+            language: None,
+            native_kind: Some("file".into()),
+            range: None,
+            resolution: ResolutionStatus::Resolved,
+            evidence: None,
+        };
+        let imported = GraphEntity {
+            id: "imported-helper".into(),
+            kind: EntityKind::Symbol,
+            name: "helper".into(),
+            path: "src/b.py".into(),
+            line: 1,
+            context: context(),
+            language: None,
+            native_kind: Some("function_definition".into()),
+            range: None,
+            resolution: ResolutionStatus::Resolved,
+            evidence: None,
+        };
+        let graph = CodeGraph {
+            context: context(),
+            entities: vec![source, imported_file, local_method, imported],
+            relationships: vec![GraphRelationship {
+                id: "import".into(),
+                kind: RelationshipKind::Imports,
+                from: "file-a".into(),
+                to: "file-b".into(),
+                context: context(),
+                resolution: ResolutionStatus::Resolved,
+                evidence: None,
+            }],
+            diagnostics: Vec::new(),
+        };
+        let (id, status) = resolve_target(&graph, "src/a.py", "helper", 20);
+        assert!(id.is_none());
+        assert_eq!(
+            status,
+            crate::engines::tie::model::TestResolution::Ambiguous
+        );
     }
 
     #[test]

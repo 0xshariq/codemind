@@ -80,6 +80,7 @@ pub struct Evidence {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChangeAnalysis {
+    pub analysis_id: String,
     pub context: RepositoryContext,
     pub selected_entity_id: String,
     pub impact_paths: Vec<ImpactPath>,

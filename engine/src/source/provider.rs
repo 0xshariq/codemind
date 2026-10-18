@@ -200,12 +200,23 @@ impl SourceProvider {
     fn capture_files(&self, root: &Path) -> Result<CapturedFiles, SourceProviderError> {
         let mut candidates = Vec::new();
         let mut visited_entries = 0_usize;
+        let root_for_walk = root.to_owned();
         for result in WalkBuilder::new(root)
             .hidden(false)
             .require_git(false)
             .git_ignore(true)
             .git_global(false)
             .git_exclude(true)
+            .filter_entry(move |entry| {
+                if entry.path() == root_for_walk {
+                    return true;
+                }
+                entry
+                    .path()
+                    .strip_prefix(&root_for_walk)
+                    .map(|relative| !limits::is_ignored(relative))
+                    .unwrap_or(false)
+            })
             .build()
         {
             let entry = result.map_err(|error| SourceProviderError::Io(io_error(error)))?;
@@ -387,6 +398,37 @@ mod tests {
         assert_eq!(snapshot.manifest.omitted_files.len(), 1);
         assert_eq!(snapshot.manifest.omitted_files[0].path, "large.bin");
         assert!(snapshot.validate().is_ok());
+    }
+
+    #[test]
+    fn prunes_builtin_ignored_directories_before_counting_walk_entries() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("node_modules")).unwrap();
+        fs::create_dir(root.path().join("node_modules/pkg")).unwrap();
+        fs::write(root.path().join("node_modules/pkg/generated.js"), "ignored").unwrap();
+        fs::write(root.path().join("main.rs"), "fn main() {}\n").unwrap();
+
+        let provider = SourceProvider {
+            max_file_bytes: 64,
+            max_files: 10,
+            max_total_bytes: 256,
+        };
+        let snapshot = provider.resolve(root.path(), "workspace-a").unwrap();
+
+        assert!(snapshot.files.contains_key("main.rs"));
+        assert!(
+            !snapshot
+                .files
+                .keys()
+                .any(|path| path.starts_with("node_modules/"))
+        );
+        assert!(
+            !snapshot
+                .manifest
+                .omitted_files
+                .iter()
+                .any(|entry| entry.path.starts_with("node_modules/"))
+        );
     }
 
     #[test]

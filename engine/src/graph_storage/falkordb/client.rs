@@ -127,36 +127,50 @@ impl GraphStorage for FalkorDbStorage {
             .map_err(|error| StorageError::Query(error.to_string()))?;
         let mut graph = self.client.select_graph(&self.graph_name);
 
-        let mut existing = graph.ro_query(
-            "MATCH (o:OperationRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})              RETURN o.payload_json AS payload LIMIT 1"
-        )
-        .with_param("id", operation.operation_id.clone())
-        .with_param("workspace", operation.context.workspace_id.clone())
-        .with_param("repository", operation.context.repository_id.clone())
-        .with_param("snapshot", operation.context.source_snapshot_id.clone())
-        .with_param("graph_version", operation.context.graph_version.clone())
-        .execute().await.map_err(|error| StorageError::Query(error.to_string()))?;
-        if let Some(row) = existing.data.next().await {
-            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
-            let old_payload: String = row
-                .try_get("payload")
-                .map_err(|error| StorageError::Query(error.to_string()))?;
-            let old =
-                serde_json::from_str::<crate::contract::operation::OperationRecord>(&old_payload)
+        match graph
+            .ro_query(
+                "MATCH (o:OperationRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})              RETURN o.payload_json AS payload LIMIT 1",
+            )
+            .with_param("id", operation.operation_id.clone())
+            .with_param("workspace", operation.context.workspace_id.clone())
+            .with_param("repository", operation.context.repository_id.clone())
+            .with_param("snapshot", operation.context.source_snapshot_id.clone())
+            .with_param("graph_version", operation.context.graph_version.clone())
+            .execute()
+            .await
+        {
+            Ok(mut existing) => {
+                if let Some(row) = existing.data.next().await {
+                    let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+                    let old_payload: String = row
+                        .try_get("payload")
+                        .map_err(|error| StorageError::Query(error.to_string()))?;
+                    let old = serde_json::from_str::<crate::contract::operation::OperationRecord>(
+                        &old_payload,
+                    )
                     .map_err(|error| StorageError::Query(error.to_string()))?;
-            if !crate::contract::operation::OperationRecord::can_transition(
-                old.state,
-                operation.state,
-            ) {
-                return Err(StorageError::Query(
-                    "operation state transition conflict".to_owned(),
-                ));
+                    if !crate::contract::operation::OperationRecord::can_transition(
+                        old.state,
+                        operation.state,
+                    ) {
+                        return Err(StorageError::Query(
+                            "operation state transition conflict".to_owned(),
+                        ));
+                    }
+                    if operation.latest_event_sequence < old.latest_event_sequence {
+                        return Err(StorageError::Query(
+                            "operation event sequence moved backwards".to_owned(),
+                        ));
+                    }
+                }
             }
-            if operation.latest_event_sequence < old.latest_event_sequence {
-                return Err(StorageError::Query(
-                    "operation event sequence moved backwards".to_owned(),
-                ));
+            Err(error) if error.to_string().contains("Invalid graph operation on empty key") => {
+                // FalkorDB does not materialize a graph key until its first
+                // write. The MERGE below is that first write, so a missing
+                // graph must be treated as an empty operation store rather
+                // than as a storage failure.
             }
+            Err(error) => return Err(StorageError::Query(error.to_string())),
         }
         graph.query(
             "MERGE (o:OperationRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
@@ -806,14 +820,18 @@ impl GraphStorage for FalkorDbStorage {
         entity_id: &str,
         max_depth: usize,
         max_paths: usize,
-    ) -> Result<Vec<crate::graph_storage::port::GraphPath>, StorageError> {
+    ) -> Result<crate::graph_storage::port::DependencyPathResult, StorageError> {
         Self::validate_context(context)?;
         if entity_id.trim().is_empty() || max_depth == 0 || max_paths == 0 {
-            return Ok(Vec::new());
+            return Ok(crate::graph_storage::port::DependencyPathResult {
+                paths: Vec::new(),
+                truncated: false,
+            });
         }
 
         let mut frontier = vec![(entity_id.to_owned(), Vec::<GraphRelationship>::new())];
         let mut completed = Vec::new();
+        let mut truncated = false;
 
         for _ in 0..max_depth {
             if frontier.is_empty() || completed.len() >= max_paths {
@@ -824,10 +842,14 @@ impl GraphStorage for FalkorDbStorage {
             for (current, path) in frontier {
                 let remaining = max_paths.saturating_sub(completed.len()).max(1);
                 let incoming = self
-                    .incoming_relationships_for(context, &current, remaining)
+                    .dependency_incoming_relationships_for(context, &current, remaining + 1)
                     .await?;
 
-                for relationship in incoming {
+                if incoming.len() > remaining {
+                    truncated = true;
+                }
+
+                for relationship in incoming.into_iter().take(remaining) {
                     let mut next_path = path.clone();
                     if next_path
                         .iter()
@@ -846,13 +868,82 @@ impl GraphStorage for FalkorDbStorage {
                     next.push((relationship.from, next_path));
                 }
                 if completed.len() >= max_paths {
+                    truncated = true;
                     break;
                 }
             }
             frontier = next;
         }
 
-        Ok(completed)
+        Ok(crate::graph_storage::port::DependencyPathResult {
+            paths: completed,
+            truncated,
+        })
+    }
+
+    async fn dependency_incoming_relationships_for(
+        &self,
+        context: &RepositoryContext,
+        entity_id: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphRelationship>, StorageError> {
+        Self::validate_context(context)?;
+        let limit = crate::graph_storage::falkordb::read::bounded_limit(limit);
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph
+            .ro_query(
+                "MATCH (a:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r:IMPORTS|CALLS]->(b:CodeEntity {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE r.workspace_id = $workspace AND r.repository_id = $repository AND r.snapshot_id = $snapshot AND r.graph_version = $graph_version RETURN r.id AS relationship_id, type(r) AS relationship_type, a.id AS from_id, b.id AS to_id, r.resolution AS resolution, r.evidence_path AS evidence_path, r.evidence_start_line AS evidence_start_line, r.evidence_end_line AS evidence_end_line, r.evidence_snapshot_id AS evidence_snapshot_id, r.evidence_provenance AS evidence_provenance LIMIT $limit",
+            )
+            .with_param("id", entity_id.to_owned())
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("snapshot", context.source_snapshot_id.clone())
+            .with_param("graph_version", context.graph_version.clone())
+            .with_param("limit", limit as i64)
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+
+        let mut relationships = Vec::new();
+        while let Some(row) = rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            relationships.push(GraphRelationship {
+                id: row
+                    .try_get("relationship_id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                kind: parse_relationship(
+                    row.try_get("relationship_type")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                )?,
+                from: row
+                    .try_get("from_id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                to: row
+                    .try_get("to_id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                context: context.clone(),
+                resolution: parse_resolution(
+                    row.try_get("resolution")
+                        .unwrap_or_else(|_| "Resolved".to_owned()),
+                )?,
+                evidence: {
+                    let path: String = row.try_get("evidence_path").unwrap_or_default();
+                    if path.is_empty() {
+                        None
+                    } else {
+                        Some(crate::engines::coie::model::SourceEvidence {
+                            path,
+                            start_line: row.try_get::<i64>("evidence_start_line").unwrap_or(0)
+                                as u32,
+                            end_line: row.try_get::<i64>("evidence_end_line").unwrap_or(0) as u32,
+                            snapshot_id: row.try_get("evidence_snapshot_id").unwrap_or_default(),
+                            provenance: row.try_get("evidence_provenance").unwrap_or_default(),
+                        })
+                    }
+                },
+            });
+        }
+        Ok(relationships)
     }
 
     async fn tests_for_context(
@@ -865,55 +956,11 @@ impl GraphStorage for FalkorDbStorage {
         let limit = limit.clamp(1, 100);
         let mut graph = self.client.select_graph(&self.graph_name);
 
-        let mut tests = Vec::new();
-        let mut rows = graph
-            .ro_query(
-                "MATCH (t:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
-                 RETURN t.id AS id, t.name AS name, t.path AS path, t.line AS line, t.framework AS framework, t.status AS status LIMIT $limit",
-            )
-            .with_param("workspace", context.workspace_id.clone())
-            .with_param("repository", context.repository_id.clone())
-            .with_param("snapshot", context.source_snapshot_id.clone())
-            .with_param("graph_version", context.graph_version.clone())
-            .with_param("limit", limit as i64)
-            .execute()
-            .await
-            .map_err(|error| StorageError::Query(error.to_string()))?;
-
-        while let Some(row) = rows.data.next().await {
-            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
-            tests.push(TestEntity {
-                id: row
-                    .try_get("id")
-                    .map_err(|error| StorageError::Query(error.to_string()))?,
-                name: row
-                    .try_get("name")
-                    .map_err(|error| StorageError::Query(error.to_string()))?,
-                path: row
-                    .try_get("path")
-                    .map_err(|error| StorageError::Query(error.to_string()))?,
-                line: row
-                    .try_get::<i64>("line")
-                    .map_err(|error| StorageError::Query(error.to_string()))?
-                    as u32,
-                framework: row
-                    .try_get("framework")
-                    .map_err(|error| StorageError::Query(error.to_string()))?,
-                status: parse_test_status(
-                    row.try_get("status")
-                        .unwrap_or_else(|_| "Supported".to_owned()),
-                )?,
-                context: context.clone(),
-            });
-        }
-
         let mut relationships = Vec::new();
         if !target_entity_ids.is_empty() {
             let mut rows = graph
                 .ro_query(
-                    "MATCH (t:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r:TARGETS|DECLARED_BY]->(e:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
-                     WHERE e.id IN $targets \
-                     RETURN r.id AS relationship_id, t.id AS test_id, e.id AS entity_id, type(r) AS relationship_type, r.evidence_path AS evidence_path, r.start_line AS start_line, r.end_line AS end_line, r.evidence_snapshot_id AS evidence_snapshot_id, r.evidence_provenance AS evidence_provenance, r.resolution AS resolution LIMIT $limit",
+                    "MATCH (t:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r:TARGETS|DECLARED_BY]->(e:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE e.id IN $targets RETURN r.id AS relationship_id, t.id AS test_id, e.id AS entity_id, type(r) AS relationship_type, r.evidence_path AS evidence_path, r.evidence_start_line AS start_line, r.evidence_end_line AS end_line, r.evidence_snapshot_id AS evidence_snapshot_id, r.evidence_provenance AS evidence_provenance, r.resolution AS resolution LIMIT $limit",
                 )
                 .with_param("workspace", context.workspace_id.clone())
                 .with_param("repository", context.repository_id.clone())
@@ -959,21 +1006,66 @@ impl GraphStorage for FalkorDbStorage {
                                 end_line: row.try_get::<i64>("end_line").unwrap_or(0) as u32,
                                 snapshot_id: row
                                     .try_get("evidence_snapshot_id")
-                                    .unwrap_or_else(|_| context.source_snapshot_id.clone()),
+                                    .unwrap_or_default(),
                                 provenance: row.try_get("evidence_provenance").unwrap_or_default(),
                             })
                         }
                     },
-                    resolution: match row
-                        .try_get::<String>("resolution")
-                        .unwrap_or_else(|_| "Resolved".to_owned())
-                        .as_str()
-                    {
-                        "Resolved" => TestResolution::Resolved,
-                        "Ambiguous" => TestResolution::Ambiguous,
-                        "Unsupported" => TestResolution::Unsupported,
-                        _ => TestResolution::Unresolved,
-                    },
+                    resolution: parse_test_resolution(
+                        row.try_get("resolution")
+                            .unwrap_or_else(|_| "Resolved".to_owned()),
+                    )?,
+                    context: context.clone(),
+                });
+            }
+        }
+
+        let test_ids: Vec<String> = relationships
+            .iter()
+            .map(|relationship| relationship.test_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let mut tests = Vec::new();
+        if !test_ids.is_empty() {
+            let mut rows = graph
+                .ro_query(
+                    "MATCH (t:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE t.id IN $test_ids RETURN t.id AS id, t.name AS name, t.path AS path, t.line AS line, t.framework AS framework, t.status AS status LIMIT $limit",
+                )
+                .with_param("workspace", context.workspace_id.clone())
+                .with_param("repository", context.repository_id.clone())
+                .with_param("snapshot", context.source_snapshot_id.clone())
+                .with_param("graph_version", context.graph_version.clone())
+                .with_param("test_ids", test_ids)
+                .with_param("limit", limit as i64)
+                .execute()
+                .await
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+
+            while let Some(row) = rows.data.next().await {
+                let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+                tests.push(TestEntity {
+                    id: row
+                        .try_get("id")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                    name: row
+                        .try_get("name")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                    path: row
+                        .try_get("path")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                    line: row
+                        .try_get::<i64>("line")
+                        .map_err(|error| StorageError::Query(error.to_string()))?
+                        as u32,
+                    framework: row
+                        .try_get("framework")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                    status: parse_test_status(
+                        row.try_get("status")
+                            .unwrap_or_else(|_| "Supported".to_owned()),
+                    )?,
                     context: context.clone(),
                 });
             }
@@ -1523,7 +1615,7 @@ impl MemoryRepository for FalkorDbStorage {
             .ro_query(
                 "MATCH (r:ReviewContextRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
                  MATCH (s:ConversationSession {id: r.session_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
-                 RETURN s.payload_json AS payload, r.owner_id AS owner_id LIMIT 1"
+                 RETURN s.payload_json AS payload, r.owner_id AS owner_id, r.episode_id AS episode_id LIMIT 1"
             )
             .with_param("id", context_id.to_owned())
             .with_param("workspace", context.workspace_id.clone())
@@ -1540,6 +1632,9 @@ impl MemoryRepository for FalkorDbStorage {
             .try_get("payload")
             .map_err(|error| StorageError::Query(error.to_string()))?;
         let owner_id: String = row.try_get("owner_id").unwrap_or_default();
+        let episode_id: String = row
+            .try_get("episode_id")
+            .map_err(|error| StorageError::Query(error.to_string()))?;
         let session: crate::memory::model::ConversationSession =
             serde_json::from_str(&session_payload)
                 .map_err(|error| StorageError::Query(error.to_string()))?;
@@ -1548,7 +1643,7 @@ impl MemoryRepository for FalkorDbStorage {
             "MATCH (s:ConversationSession {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:HAS_TURN]->(t:ConversationTurn) \
              RETURN t.payload_json AS payload LIMIT 100"
         )
-        .with_param("id", context_id.to_owned())
+        .with_param("id", session.session_id.clone())
         .with_param("workspace", context.workspace_id.clone())
         .with_param("repository", context.repository_id.clone())
         .with_param("snapshot", context.source_snapshot_id.clone())
@@ -1567,10 +1662,10 @@ impl MemoryRepository for FalkorDbStorage {
         }
 
         let mut episode_rows = graph.ro_query(
-            "MATCH (s:ConversationSession {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:HAS_EPISODE]->(e:ReviewEpisode) \
+            "MATCH (e:ReviewEpisode {id: $episode, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
              RETURN e.payload_json AS payload LIMIT 1"
         )
-        .with_param("id", context_id.to_owned())
+        .with_param("episode", episode_id.clone())
         .with_param("workspace", context.workspace_id.clone())
         .with_param("repository", context.repository_id.clone())
         .with_param("snapshot", context.source_snapshot_id.clone())
@@ -1632,6 +1727,20 @@ fn parse_test_status(
         "Unsupported" => Ok(crate::engines::tie::model::TestStatus::Unsupported),
         _ => Err(StorageError::Query(format!(
             "unsupported test status: {value}"
+        ))),
+    }
+}
+
+fn parse_test_resolution(
+    value: String,
+) -> Result<crate::engines::tie::model::TestResolution, StorageError> {
+    match value.as_str() {
+        "Resolved" => Ok(crate::engines::tie::model::TestResolution::Resolved),
+        "Unresolved" => Ok(crate::engines::tie::model::TestResolution::Unresolved),
+        "Ambiguous" => Ok(crate::engines::tie::model::TestResolution::Ambiguous),
+        "Unsupported" => Ok(crate::engines::tie::model::TestResolution::Unsupported),
+        _ => Err(StorageError::Query(format!(
+            "unsupported test relationship resolution: {value}"
         ))),
     }
 }

@@ -18,7 +18,9 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "requires GitHub access and FalkorDB; run with --ignored"]
 async fn operation_grpc_starts_the_pipeline_and_streams_replayable_progress() {
-    let (_temp, root, snapshot) = support::github_snapshot();
+    let Some((root, snapshot)) = support::github_snapshot() else {
+        return;
+    };
     let graph = CoieEngine.extract(&snapshot).unwrap();
     let symbol_name = support::first_callable_symbol_name(&graph);
     let graph_name = format!("codemind_level3_grpc_{}", Uuid::new_v4().simple());
@@ -92,6 +94,11 @@ async fn operation_grpc_starts_the_pipeline_and_streams_replayable_progress() {
     assert!(events.iter().any(|event| event.stage == "coie"));
     assert!(events.iter().any(|event| event.stage == "tie"));
     assert!(events.iter().any(|event| event.stage == "chie"));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message == "stage completed")
+    );
 
     let stored = storage
         .events_since(

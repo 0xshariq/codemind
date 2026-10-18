@@ -10,7 +10,13 @@ pub fn build(analysis: &ChangeAnalysis) -> Vec<Evidence> {
                 continue;
             }
             result.push(Evidence {
-                id: format!("evidence:{}", relationship.id),
+                id: format!(
+                    "evidence:{}:{}:{}:{}",
+                    analysis.analysis_id,
+                    analysis.selected_entity_id,
+                    path.entity_id,
+                    relationship.id
+                ),
                 relationship_id: Some(relationship.id.clone()),
                 entity_id: Some(path.entity_id.clone()),
                 test_id: None,
@@ -22,7 +28,16 @@ pub fn build(analysis: &ChangeAnalysis) -> Vec<Evidence> {
 
     for candidate in &analysis.test_candidates {
         result.push(Evidence {
-            id: format!("test-evidence:{}", candidate.test_id),
+            id: format!(
+                "test-evidence:{}:{}:{}:{}",
+                analysis.analysis_id,
+                analysis.selected_entity_id,
+                candidate
+                    .target_entity_id
+                    .as_deref()
+                    .unwrap_or("<unresolved>"),
+                candidate.test_id
+            ),
             relationship_id: None,
             entity_id: candidate.target_entity_id.clone(),
             test_id: Some(candidate.test_id.clone()),
@@ -92,6 +107,7 @@ mod tests {
             ..resolved.clone()
         };
         let analysis = ChangeAnalysis {
+            analysis_id: "analysis-test".into(),
             selected_entity_id: "b".into(),
             context,
             impact_paths: vec![ImpactPath {
@@ -122,11 +138,15 @@ mod tests {
         );
         let evidence = build(&analysis);
         assert_eq!(evidence.len(), 2);
-        assert!(evidence.iter().any(|item| item.id == "evidence:call"));
         assert!(
             evidence
                 .iter()
-                .any(|item| item.id == "test-evidence:test-1")
+                .any(|item| item.id == "evidence:analysis-test:b:a:call")
+        );
+        assert!(
+            evidence
+                .iter()
+                .any(|item| item.id == "test-evidence:analysis-test:b:b:test-1")
         );
     }
 }
