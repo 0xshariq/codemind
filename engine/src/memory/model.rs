@@ -2,6 +2,9 @@ use crate::source::RepositoryContext;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
+/// Conversation turns are stored as bounded individual graph nodes and may
+/// exceed the small single-memory payload cap in aggregate.
+pub const MAX_REVIEW_CONTEXT_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidenceReference {

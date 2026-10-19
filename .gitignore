@@ -19,6 +19,7 @@
 
 # production
 /apps/web/build
+/apps/web/.codemind/
 
 # misc
 /apps/web/.DS_Store
@@ -31,7 +32,8 @@
 /apps/web/.pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
-/apps/web/.env.local
+/apps/web/.env*
+!/apps/web/.env.example
 /engine/.env.test
 
 # vercel
@@ -39,12 +41,16 @@
 
 # typescript
 /apps/web/*.tsbuildinfo
+# Next.js regenerates this file; tsconfig includes it for local type checking.
 /apps/web/next-env.d.ts
 
 # internal planning docs
-/internal-docs/
+/internal-docs/*
 
 # rust engine
 /engine/target
 
 /**/*.log
+
+/apps/web/playwright*/
+/apps/web/test-results/

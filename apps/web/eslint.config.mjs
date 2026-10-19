@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    ".codemind/**",
+    "coverage/**",
+    "playwright-report/**",
+    "test-results/**",
     "src/lib/server/rust-client/generated/**",
   ]),
 ]);

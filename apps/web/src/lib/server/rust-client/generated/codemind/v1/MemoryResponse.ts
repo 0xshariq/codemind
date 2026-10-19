@@ -1,4 +1,4 @@
-// Original file: /home/sharique/desktop/hackathon/codemind/proto/v1/memory.proto
+// Original file: ../../proto/v1/memory.proto
 
 import type { MemoryRecord as _codemind_v1_MemoryRecord, MemoryRecord__Output as _codemind_v1_MemoryRecord__Output } from '../../codemind/v1/MemoryRecord';
 import type { Handoff as _codemind_v1_Handoff, Handoff__Output as _codemind_v1_Handoff__Output } from '../../codemind/v1/Handoff';
@@ -18,4 +18,5 @@ export interface MemoryResponse__Output {
   'handoff'?: (_codemind_v1_Handoff__Output);
   'error'?: (_codemind_v1_ErrorStatus__Output);
   'review'?: (_codemind_v1_ReviewContextRecord__Output);
+  'result'?: "memory"|"handoff"|"error"|"review";
 }

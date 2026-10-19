@@ -95,6 +95,13 @@ pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepositor
         entity_id: &str,
     ) -> Result<Option<GraphEntity>, StorageError>;
 
+    async fn search_code_entities(
+        &self,
+        context: &RepositoryContext,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphEntity>, StorageError>;
+
     async fn relationships_for(
         &self,
         context: &RepositoryContext,

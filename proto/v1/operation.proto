@@ -13,6 +13,7 @@ message ProgressEvent {
   Correlation correlation = 6;
   RepositoryContext context = 7;
   string message = 8;
+  string stage_state = 9;
 }
 
 message StreamProgressRequest {

@@ -5,7 +5,7 @@ use crate::memory::{
 };
 use crate::{
     contract::generated::{
-        self, ChangeAnalysisQuery, QueryResponse, SymbolRelationshipQuery,
+        self, ChangeAnalysisQuery, QueryResponse, SearchCodeQuery, SymbolRelationshipQuery,
         intelligence_service_server::IntelligenceService, query_response,
         repository_service_server::RepositoryService,
     },
@@ -107,6 +107,12 @@ where
         };
 
         let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
+        tracing::info!(
+            operation_id = %operation_id,
+            repository_id = %snapshot.context.repository_id,
+            selected_entity_id = %selected.id,
+            "Rust engine accepted investigation"
+        );
         let request_id = input
             .correlation
             .as_ref()
@@ -641,6 +647,78 @@ impl<S> IntelligenceService for IntelligenceServer<S>
 where
     S: GraphStorage + 'static,
 {
+    async fn search_code(
+        &self,
+        request: Request<SearchCodeQuery>,
+    ) -> Result<Response<QueryResponse>, Status> {
+        let input = request.into_inner();
+        let context = repository_context(
+            input
+                .context
+                .ok_or_else(|| Status::invalid_argument("context is required"))?,
+        )?;
+        let query = input.query.trim();
+        if query.is_empty() || query.len() > 500 {
+            return Err(Status::invalid_argument(
+                "query must contain 1 to 500 characters",
+            ));
+        }
+        let requested_limit = input.limit.clamp(1, 100) as usize;
+        let mut matches = self
+            .storage
+            .search_code_entities(&context, query, requested_limit + 1)
+            .await
+            .map_err(storage_status)?;
+        let truncated = matches.len() > requested_limit;
+        matches.truncate(requested_limit);
+        let data = serde_json::json!({
+            "query": query,
+            "matches": matches,
+            "truncated": truncated,
+        });
+        let evidence = matches
+            .iter()
+            .filter(|entity| !entity.path.is_empty() && entity.line > 0)
+            .map(|entity| generated::SourceReference {
+                path: entity.path.clone(),
+                start_line: entity.line,
+                start_column: 0,
+                end_line: entity.line,
+                end_column: 0,
+                snapshot_id: context.source_snapshot_id.clone(),
+            })
+            .collect();
+
+        Ok(Response::new(QueryResponse {
+            result: Some(query_response::Result::Data(generated::CanonicalResult {
+                outcome: if truncated {
+                    generated::Outcome::Partial as i32
+                } else if matches.is_empty() {
+                    generated::Outcome::Empty as i32
+                } else {
+                    generated::Outcome::Success as i32
+                },
+                completeness: if truncated {
+                    generated::Completeness::Truncated as i32
+                } else {
+                    generated::Completeness::Complete as i32
+                },
+                freshness: generated::Freshness::Current as i32,
+                context: Some(crate::transport::conversions::context_proto(&context)),
+                correlation: None,
+                data_json: serde_json::to_string(&data)
+                    .map_err(|error| Status::internal(error.to_string()))?,
+                evidence,
+                diagnostics: Vec::new(),
+                limitations: if truncated {
+                    vec!["search results were truncated at the requested bound".to_owned()]
+                } else {
+                    Vec::new()
+                },
+            })),
+        }))
+    }
+
     async fn query_symbol_relationships(
         &self,
         request: Request<SymbolRelationshipQuery>,
@@ -718,6 +796,14 @@ where
                 "max_depth must be between 1 and 8",
             ));
         }
+
+        tracing::info!(
+            repository_id = %context.repository_id,
+            source_snapshot_id = %context.source_snapshot_id,
+            symbol_id = %input.symbol_id,
+            max_depth = input.max_depth,
+            "Rust engine started change analysis query"
+        );
 
         let selected = self
             .storage
@@ -809,6 +895,17 @@ where
             );
         }
 
+        tracing::info!(
+            repository_id = %analysis.context.repository_id,
+            source_snapshot_id = %analysis.context.source_snapshot_id,
+            symbol_id = %analysis.selected_entity_id,
+            impact_paths = analysis.impact_paths.len(),
+            test_candidates = analysis.test_candidates.len(),
+            truncated = analysis.truncated,
+            "Rust engine completed change analysis query"
+        );
+
+        let analysis = fit_change_analysis_result(analysis);
         let data_json = serde_json::to_string(&analysis)
             .map_err(|error| Status::internal(error.to_string()))?;
 
@@ -852,6 +949,82 @@ where
             })),
         }))
     }
+}
+
+/// Keep the complete canonical envelope below the shared 256 KiB result
+/// contract. ChIE's nested path and evidence records can otherwise exceed the
+/// byte bound even when each individual list respects its item-count limit.
+fn fit_change_analysis_result(
+    mut analysis: crate::engines::chie::model::ChangeAnalysis,
+) -> crate::engines::chie::model::ChangeAnalysis {
+    use crate::contract::result::MAX_SERIALIZED_BYTES;
+    const DATA_BUDGET: usize = MAX_SERIALIZED_BYTES - 64 * 1024;
+
+    let serialized_len = |value: &crate::engines::chie::model::ChangeAnalysis| {
+        serde_json::to_vec(value)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX)
+    };
+    while serialized_len(&analysis) > DATA_BUDGET {
+        let removed = if !analysis.impact_paths.is_empty() {
+            analysis.impact_paths.pop();
+            if let Some(impact) = analysis.impact.as_mut() {
+                impact.paths.pop();
+                impact.impacted_entity_ids = std::iter::once(analysis.selected_entity_id.clone())
+                    .chain(impact.paths.iter().map(|path| path.entity_id.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                impact.truncated = true;
+                impact.availability = crate::engines::chie::model::EvidenceAvailability::Partial;
+            }
+            true
+        } else if !analysis.test_candidates.is_empty() {
+            analysis.test_candidates.pop();
+            true
+        } else if !analysis.evidence_records.is_empty() {
+            analysis.evidence_records.pop();
+            analysis.evidence = analysis
+                .evidence_records
+                .iter()
+                .filter_map(|record| record.relationship_id.clone())
+                .collect();
+            if let Some(impact) = analysis.impact.as_mut() {
+                impact.evidence = analysis
+                    .evidence_records
+                    .iter()
+                    .filter_map(|record| record.source.clone())
+                    .collect();
+            }
+            true
+        } else if analysis.evidence.pop().is_some() {
+            true
+        } else if let Some(impact) = analysis
+            .impact
+            .as_mut()
+            .filter(|impact| !impact.evidence.is_empty())
+        {
+            impact.evidence.pop();
+            true
+        } else {
+            false
+        };
+        if !removed {
+            break;
+        }
+        analysis.truncated = true;
+        if !analysis
+            .limitations
+            .iter()
+            .any(|item| item.contains("serialized result byte limit"))
+        {
+            analysis.limitations.push(
+                "Evidence was bounded to fit the canonical serialized result byte limit."
+                    .to_owned(),
+            );
+        }
+    }
+    analysis
 }
 
 fn principal_id<T>(request: &Request<T>) -> Result<String, Status> {
@@ -904,5 +1077,59 @@ fn storage_status(error: StorageError) -> Status {
             Status::invalid_argument(message)
         }
         StorageError::Query(message) => Status::internal(message),
+    }
+}
+
+#[cfg(test)]
+mod bounded_change_analysis_tests {
+    use super::fit_change_analysis_result;
+    use crate::{
+        engines::chie::model::{ChangeAnalysis, RiskLevel, TestCandidate},
+        source::RepositoryContext,
+    };
+
+    #[test]
+    fn oversized_change_analysis_is_truncated_to_the_canonical_result_budget() {
+        let context = RepositoryContext {
+            repository_id: "repo".into(),
+            workspace_id: "workspace".into(),
+            source_snapshot_id: "snapshot".into(),
+            graph_version: "graph".into(),
+        };
+        let analysis = ChangeAnalysis {
+            analysis_id: "analysis".into(),
+            context,
+            selected_entity_id: "selected".into(),
+            impact_paths: Vec::new(),
+            test_candidates: (0..100)
+                .map(|index| TestCandidate {
+                    test_id: format!("test-{index}"),
+                    name: "large-name".repeat(500),
+                    path: "tests/example.rs".into(),
+                    evidence_path: "tests/example.rs".into(),
+                    target_entity_id: None,
+                    evidence: None,
+                })
+                .collect(),
+            risk: RiskLevel::Unknown,
+            risk_assessment: None,
+            impact: None,
+            evidence: Vec::new(),
+            evidence_records: Vec::new(),
+            limitations: Vec::new(),
+            truncated: false,
+        };
+
+        let bounded = fit_change_analysis_result(analysis);
+        let encoded = serde_json::to_vec(&bounded).expect("analysis serializes");
+        assert!(encoded.len() <= crate::contract::result::MAX_SERIALIZED_BYTES - 64 * 1024);
+        assert!(bounded.truncated);
+        assert!(bounded.test_candidates.len() < 100);
+        assert!(
+            bounded
+                .limitations
+                .iter()
+                .any(|item| item.contains("serialized result byte limit"))
+        );
     }
 }

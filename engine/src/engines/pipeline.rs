@@ -98,6 +98,12 @@ where
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("operation:{}", Uuid::new_v4()));
+        tracing::info!(
+            operation_id = %operation_id,
+            repository_id = %request.snapshot.context.repository_id,
+            selected_entity_id = %request.selected_entity_id,
+            "investigation pipeline accepted"
+        );
         let mut operation = Operation::new(
             operation_id.clone(),
             request.request_id.clone(),
@@ -118,6 +124,13 @@ where
                 let event = operation.completed_event().map_err(PipelineError::Engine)?;
                 self.storage.persist_operation(&operation.record).await?;
                 self.storage.append_operation_event(&event).await?;
+                tracing::info!(
+                    operation_id = %operation_id,
+                    impacted_entities = result.analysis.impact_paths.len(),
+                    test_candidates = result.analysis.test_candidates.len(),
+                    truncated = result.analysis.truncated,
+                    "investigation pipeline completed"
+                );
                 Ok(result)
             }
             Err(error) => {
@@ -136,6 +149,7 @@ where
                 } else {
                     let _ = self.storage.persist_operation(&operation.record).await;
                 }
+                tracing::error!(operation_id = %operation_id, error = %error, "investigation pipeline failed");
                 Err(error)
             }
         }
@@ -318,7 +332,9 @@ where
             .begin_stage(stage)
             .map_err(PipelineError::Engine)?;
         self.storage.persist_operation(&operation.record).await?;
-        self.persist_operation_event(&event).await
+        self.persist_operation_event(&event).await?;
+        tracing::info!(operation_id = %operation.record.operation_id, stage, "engine stage started");
+        Ok(())
     }
 
     async fn stage_finish(
@@ -330,7 +346,9 @@ where
             .finish_stage(stage)
             .map_err(PipelineError::Engine)?;
         self.storage.persist_operation(&operation.record).await?;
-        self.persist_operation_event(&event).await
+        self.persist_operation_event(&event).await?;
+        tracing::info!(operation_id = %operation.record.operation_id, stage, "engine stage completed");
+        Ok(())
     }
 
     async fn persist_operation_event(

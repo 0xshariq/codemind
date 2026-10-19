@@ -1,11 +1,12 @@
 import { flatten, unflatten } from "flat";
 import { encode, decode } from "@toon-format/toon";
+import { isDeepStrictEqual } from "node:util";
 import { projectForLlm } from "./llm-projection";
 
 export function encodeLlmResult(value: Record<string, unknown>, maxBytes = 256 * 1024): string {
   assertFlattenable(value);
   let projected = projectForLlm(value);
-  let encoded = encode(flatten(projected));
+  let encoded = encodeFlattened(projected);
   while (Buffer.byteLength(encoded, "utf8") > maxBytes) {
     const next = projectForLlm(projected, Math.max(1, Math.floor(
       Math.max(1, countProjectedItems(projected)) / 2,
@@ -14,9 +15,20 @@ export function encodeLlmResult(value: Record<string, unknown>, maxBytes = 256 *
       throw new Error("LLM result exceeds the configured encoding budget");
     }
     projected = { ...next, truncated: true, completeness: "partial" };
-    encoded = encode(flatten(projected));
+    encoded = encodeFlattened(projected);
   }
   return encoded;
+}
+
+function encodeFlattened(projected: Record<string, unknown>): string {
+  const flattened = flatten(projected, { safe: true });
+  // `object: true` forces numeric array indices to become object keys in flat v6,
+  // which loses canonical array semantics across the LLM boundary.
+  const restored = unflatten(flattened);
+  if (!isDeepStrictEqual(restored, projected)) {
+    throw new Error("LLM result flattening was not reversible");
+  }
+  return encode(flattened);
 }
 
 function assertFlattenable(value: unknown, path = "result"): void {
@@ -26,7 +38,8 @@ function assertFlattenable(value: unknown, path = "result"): void {
   }
   if (!value || typeof value !== "object") return;
   for (const [key, item] of Object.entries(value)) {
-    if (key.includes(".") || key.includes("[")) {
+    if (key.includes(".") || key.includes("[") || key.includes("]") || ["__proto__", "prototype", "constructor"].includes(key)
+      || /[\u0000-\u001f\u007f]/.test(key)) {
       throw new Error(`LLM result contains an ambiguous key at ${path}`);
     }
     assertFlattenable(item, `${path}.${key}`);

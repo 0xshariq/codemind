@@ -17,6 +17,7 @@ const languages = {
   jsx: () => import("shiki/langs/jsx.mjs"),
   markdown: () => import("shiki/langs/markdown.mjs"),
   python: () => import("shiki/langs/python.mjs"),
+  rust: () => import("shiki/langs/rust.mjs"),
   sql: () => import("shiki/langs/sql.mjs"),
   tsx: () => import("shiki/langs/tsx.mjs"),
   typescript: () => import("shiki/langs/typescript.mjs"),
@@ -37,11 +38,29 @@ const aliases: Record<string, keyof typeof languages> = {
 
 let highlighter: Promise<HighlighterCore> | undefined
 
+const codeMindTokenColors = [
+  { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#6B7280", fontStyle: "italic" } },
+  { scope: ["keyword", "storage"], settings: { foreground: "#8B5CF6" } },
+  { scope: ["string", "constant.numeric"], settings: { foreground: "#22C55E" } },
+  { scope: ["entity.name.function", "support.function"], settings: { foreground: "#60A5FA" } },
+  { scope: ["entity.name.type", "support.type"], settings: { foreground: "#F59E0B" } },
+];
+
+const codeMindDark = {
+  name: "codemind-dark",
+  type: "dark",
+  fg: "#F9FAFB",
+  bg: "#111827",
+  colors: { "editor.background": "#111827", "editor.foreground": "#F9FAFB" },
+  settings: codeMindTokenColors,
+  tokenColors: codeMindTokenColors,
+} as const
+
 function getHighlighter() {
   highlighter ??= createHighlighterCore({
     themes: [
       import("shiki/themes/github-light.mjs"),
-      import("shiki/themes/github-dark.mjs"),
+      codeMindDark,
     ],
     langs: [],
     engine: createJavaScriptRegexEngine({ forgiving: true }),
@@ -54,7 +73,7 @@ function getLanguage(language: string) {
   const name = language.toLowerCase()
 
   if (name === "ansi") {
-    return name
+    return null
   }
 
   if (name in languages) {
@@ -75,7 +94,7 @@ export async function loadHighlighter(language: string) {
 
   const shiki = await getHighlighter()
 
-  if (lang !== "ansi" && !shiki.getLoadedLanguages().includes(lang)) {
+  if (!shiki.getLoadedLanguages().includes(lang)) {
     await shiki.loadLanguage(languages[lang])
   }
 
@@ -86,17 +105,12 @@ export async function loadHighlighter(language: string) {
       const tokenize = (text: string) =>
         shiki.codeToTokens(text, {
           lang,
-          themes: { light: "github-light", dark: "github-dark" },
+          themes: { light: "github-light", dark: "codemind-dark" },
           defaultColor: false,
           grammarState: state,
         }).tokens
 
-      // ANSI has no grammar state, so each line is tokenized on its own and
-      // gets the same colors whether it arrives in one piece or streams.
-      const tokens =
-        lang === "ansi"
-          ? code.split("\n").flatMap((line) => tokenize(line))
-          : tokenize(code)
+      const tokens = tokenize(code)
 
       return {
         lines: tokens.map((line) =>

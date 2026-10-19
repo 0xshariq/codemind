@@ -814,6 +814,70 @@ impl GraphStorage for FalkorDbStorage {
         }))
     }
 
+    async fn search_code_entities(
+        &self,
+        context: &RepositoryContext,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphEntity>, StorageError> {
+        Self::validate_context(context)?;
+        let query = query.trim();
+        if query.is_empty() || query.len() > 500 {
+            return Err(StorageError::Query(
+                "search query must contain 1 to 500 characters".to_owned(),
+            ));
+        }
+        let limit = crate::graph_storage::falkordb::read::bounded_search_limit(limit);
+        let mut graph = self.client.select_graph(&self.graph_name);
+        let mut rows = graph
+            .ro_query(
+                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) \
+                 WHERE toLower(n.name) CONTAINS toLower($query) OR toLower(n.path) CONTAINS toLower($query) \
+                 RETURN n.id AS id, n.kind AS kind, n.name AS name, n.path AS path, n.line AS line \
+                 ORDER BY n.path, n.line LIMIT $limit",
+            )
+            .with_param("query", query.to_owned())
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("snapshot", context.source_snapshot_id.clone())
+            .with_param("graph_version", context.graph_version.clone())
+            .with_param("limit", limit as i64)
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+
+        let mut entities = Vec::new();
+        while let Some(row) = rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            entities.push(GraphEntity {
+                id: row
+                    .try_get("id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                kind: parse_entity_kind(
+                    row.try_get("kind")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                )?,
+                name: row
+                    .try_get("name")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                path: row
+                    .try_get("path")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                line: row
+                    .try_get::<i64>("line")
+                    .map_err(|error| StorageError::Query(error.to_string()))?
+                    as u32,
+                context: context.clone(),
+                language: None,
+                native_kind: None,
+                range: None,
+                resolution: crate::engines::coie::model::ResolutionStatus::Resolved,
+                evidence: None,
+            });
+        }
+        Ok(entities)
+    }
+
     async fn dependency_paths_for(
         &self,
         context: &RepositoryContext,
