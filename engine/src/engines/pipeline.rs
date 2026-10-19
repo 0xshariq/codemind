@@ -98,6 +98,12 @@ where
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("operation:{}", Uuid::new_v4()));
+        tracing::info!(
+            operation_id = %operation_id,
+            repository_id = %request.snapshot.context.repository_id,
+            selected_entity_id = %request.selected_entity_id,
+            "investigation pipeline accepted"
+        );
         let mut operation = Operation::new(
             operation_id.clone(),
             request.request_id.clone(),
@@ -115,9 +121,16 @@ where
                 operation
                     .transition(OperationState::Completed)
                     .map_err(PipelineError::Engine)?;
-                self.storage.persist_operation(&operation.record).await?;
                 let event = operation.completed_event().map_err(PipelineError::Engine)?;
+                self.storage.persist_operation(&operation.record).await?;
                 self.storage.append_operation_event(&event).await?;
+                tracing::info!(
+                    operation_id = %operation_id,
+                    impacted_entities = result.analysis.impact_paths.len(),
+                    test_candidates = result.analysis.test_candidates.len(),
+                    truncated = result.analysis.truncated,
+                    "investigation pipeline completed"
+                );
                 Ok(result)
             }
             Err(error) => {
@@ -125,15 +138,18 @@ where
                 if operation.record.state != OperationState::Failed {
                     let _ = operation.transition(OperationState::Failed);
                 }
-                let _ = self.storage.persist_operation(&operation.record).await;
                 let failed = operation.event(
                     "pipeline".to_owned(),
                     crate::contract::operation::StageState::Failed,
                     error.to_string(),
                 );
                 if let Ok(event) = failed {
+                    let _ = self.storage.persist_operation(&operation.record).await;
                     let _ = self.persist_operation_event(&event).await;
+                } else {
+                    let _ = self.storage.persist_operation(&operation.record).await;
                 }
+                tracing::error!(operation_id = %operation_id, error = %error, "investigation pipeline failed");
                 Err(error)
             }
         }
@@ -194,7 +210,7 @@ where
         // in-memory CoIE/TIE outputs. This keeps FalkorDB load-bearing in the
         // real pipeline and exercises the same Type-B-style semantic reads
         // used by the transport boundary.
-        let paths = self
+        let dependency_paths = self
             .storage
             .dependency_paths_for(
                 &request.snapshot.context,
@@ -203,6 +219,7 @@ where
                 100,
             )
             .await?;
+        let paths = dependency_paths.paths;
         let mut relationship_ids = std::collections::HashSet::new();
         let mut bounded_relationships = Vec::new();
         let mut entity_ids = std::collections::HashSet::from([request.selected_entity_id.clone()]);
@@ -246,7 +263,7 @@ where
             .storage
             .tests_for_context(&request.snapshot.context, &target_ids, 100)
             .await?;
-        let analysis = self
+        let mut analysis = self
             .chie
             .analyze(
                 &bounded_graph,
@@ -255,6 +272,16 @@ where
                 &request.selected_entity_id,
             )
             .map_err(PipelineError::Engine)?;
+        if dependency_paths.truncated {
+            analysis.truncated = true;
+            if let Some(impact) = analysis.impact.as_mut() {
+                impact.truncated = true;
+                impact.availability = crate::engines::chie::model::EvidenceAvailability::Partial;
+            }
+            analysis.limitations.push(
+                "Storage dependency paths were truncated at the bounded read limit.".to_owned(),
+            );
+        }
         let mut change_set = ChangeSet::for_entity(
             format!("change-set:{}", operation.record.operation_id),
             request.snapshot.context.clone(),
@@ -305,7 +332,9 @@ where
             .begin_stage(stage)
             .map_err(PipelineError::Engine)?;
         self.storage.persist_operation(&operation.record).await?;
-        self.persist_operation_event(&event).await
+        self.persist_operation_event(&event).await?;
+        tracing::info!(operation_id = %operation.record.operation_id, stage, "engine stage started");
+        Ok(())
     }
 
     async fn stage_finish(
@@ -317,7 +346,9 @@ where
             .finish_stage(stage)
             .map_err(PipelineError::Engine)?;
         self.storage.persist_operation(&operation.record).await?;
-        self.persist_operation_event(&event).await
+        self.persist_operation_event(&event).await?;
+        tracing::info!(operation_id = %operation.record.operation_id, stage, "engine stage completed");
+        Ok(())
     }
 
     async fn persist_operation_event(

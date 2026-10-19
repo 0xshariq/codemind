@@ -1,4 +1,4 @@
-// Original file: /home/sharique/desktop/hackathon/codemind/proto/v1/common.proto
+// Original file: ../../proto/v1/common.proto
 
 
 export interface Diagnostic {

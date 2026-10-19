@@ -78,6 +78,7 @@ mod tests {
 
     fn analysis() -> ChangeAnalysis {
         ChangeAnalysis {
+            analysis_id: "analysis-test".into(),
             context: RepositoryContext {
                 repository_id: "repo".into(),
                 workspace_id: "workspace".into(),

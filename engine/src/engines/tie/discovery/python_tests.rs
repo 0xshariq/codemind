@@ -26,7 +26,7 @@ fn collect(
         && let Some(name) = node
             .child_by_field_name("name")
             .and_then(|child| node_text(child, source))
-        && (name.starts_with("test_") || (inside_unittest && name != "__init__"))
+        && (name.starts_with("test_") || (inside_unittest && name.starts_with("test")))
     {
         output.push(TestDeclaration {
             name,
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn discovers_pytest_and_unittest_methods_from_ast_structure() {
-        let source = "import unittest\n\ndef test_value():\n    helper()\n\nclass Tests(unittest.TestCase):\n    def test_method(self):\n        helper()\n";
+        let source = "import unittest\n\ndef test_value():\n    helper()\n\nclass Tests(unittest.TestCase):\n    def setUp(self):\n        helper()\n    def tearDown(self):\n        helper()\n    def helper(self):\n        helper()\n    def test_method(self):\n        helper()\n";
         let tests = discover(source).unwrap();
         assert_eq!(tests.len(), 2);
         assert_eq!(tests[0].framework, "pytest");

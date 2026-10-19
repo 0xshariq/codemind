@@ -117,6 +117,67 @@ fn multi_hop_relationships_produce_direct_indirect_impact_and_tests() {
 }
 
 #[test]
+fn risk_counts_unique_impacted_entities_not_alternate_paths() {
+    let context = context();
+
+    let entities = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|id| GraphEntity {
+            id: id.to_owned(),
+            kind: EntityKind::Symbol,
+            name: id.to_owned(),
+            path: format!("src/{id}.rs"),
+            line: 1,
+            context: context.clone(),
+            language: Some(codemind_engine::source::Language::Rust),
+            native_kind: Some("function_item".to_owned()),
+            range: None,
+            resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+            evidence: None,
+        })
+        .collect();
+
+    let edge = |id: &str, from: &str, to: &str| GraphRelationship {
+        id: id.to_owned(),
+        kind: RelationshipKind::Calls,
+        from: from.to_owned(),
+        to: to.to_owned(),
+        context: context.clone(),
+        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
+            path: "src/lib.rs".to_owned(),
+            start_line: 1,
+            end_line: 1,
+            snapshot_id: context.source_snapshot_id.clone(),
+            provenance: "test".to_owned(),
+        }),
+    };
+
+    let graph = CodeGraph {
+        context: context.clone(),
+        entities,
+        relationships: vec![
+            edge("b-a", "b", "a"),
+            edge("c-a", "c", "a"),
+            edge("d-b", "d", "b"),
+            edge("d-c", "d", "c"),
+        ],
+        diagnostics: Vec::new(),
+    };
+
+    let analysis = ChieEngine::default()
+        .analyze(&graph, &[], &[], "a")
+        .unwrap();
+
+    assert_eq!(analysis.impact_paths.len(), 4);
+    assert_eq!(
+        analysis.impact.as_ref().unwrap().impacted_entity_ids.len(),
+        3
+    );
+    assert_eq!(analysis.risk, RiskLevel::Medium);
+}
+
+#[test]
 fn missing_symbol_produces_selection_error() {
     let context = context();
 

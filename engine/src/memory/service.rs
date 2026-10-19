@@ -106,7 +106,7 @@ pub async fn persist_review_context<R: MemoryRepository>(
         || record.episode.episode_id.trim().is_empty()
         || record.findings.len() > 64
         || record.turns.len() > 100
-        || payload_size > crate::memory::model::MAX_PAYLOAD_BYTES
+        || payload_size > crate::memory::model::MAX_REVIEW_CONTEXT_BYTES
     {
         return Err(StorageError::Query("review context is invalid".to_owned()));
     }

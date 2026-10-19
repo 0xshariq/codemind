@@ -19,6 +19,14 @@ pub fn to_proto(value: &Progress) -> generated::ProgressEvent {
             graph_version: value.context.graph_version.clone(),
         }),
         message: value.message.clone(),
+        stage_state: match value.stage_state {
+            crate::contract::operation::StageState::Pending => "pending",
+            crate::contract::operation::StageState::Running => "running",
+            crate::contract::operation::StageState::Completed => "completed",
+            crate::contract::operation::StageState::Skipped => "skipped",
+            crate::contract::operation::StageState::Failed => "failed",
+        }
+        .to_owned(),
     }
 }
 
@@ -44,6 +52,7 @@ mod tests {
         let proto = to_proto(&progress);
         assert_eq!(proto.sequence, 1);
         assert_eq!(proto.stage, "coie");
+        assert_eq!(proto.stage_state, "running");
         assert_eq!(proto.correlation.unwrap().operation_id, "op");
         assert_eq!(progress.stage_state, StageState::Running);
     }

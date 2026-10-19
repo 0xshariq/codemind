@@ -192,13 +192,12 @@ pub struct TieResult {
 
 impl TieResult {
     pub fn validate(&self, expected: &RepositoryContext) -> Result<(), ContractError> {
-        if self.tests.len() > MAX_RELATIONSHIPS * 10
-            || self.relationships.len() > MAX_RELATIONSHIPS * 10
-        {
-            return Err(ContractError::LimitExceeded(
-                "TIE result exceeds the internal result bound".to_owned(),
-            ));
-        }
+        // TieResult is the Type-A graph-construction output used by the
+        // investigation pipeline. It is not a bounded Type-B query result.
+        // Applying the semantic MAX_RELATIONSHIPS-derived result cap here
+        // makes otherwise valid repositories fail merely because they contain
+        // more tests than the query-result budget. Bounded semantic reads are
+        // enforced by TieQueryRequest and the storage/query boundaries instead.
         let mut test_ids = HashSet::with_capacity(self.tests.len());
         for test in &self.tests {
             test.context.ensure_matches(expected)?;

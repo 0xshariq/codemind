@@ -1,4 +1,5 @@
 use codemind_engine::{
+    engines::coie::model::{CodeGraph, EntityKind, GraphEntity, ResolutionStatus},
     graph_storage::{FalkorDbStorage, GraphStorage},
     memory::{
         model::{EvidenceReference, MemoryRecord},
@@ -46,6 +47,32 @@ async fn memory_survives_a_fresh_repository_lookup_with_scope_and_evidence() {
         created_at: "2026-10-17T00:00:00Z".into(),
         updated_at: "2026-10-17T00:00:00Z".into(),
     };
+
+    // FalkorDB requires the graph key to be materialized before a read-only
+    // query can be executed. Memory persistence performs a read-before-write
+    // idempotency check, so bootstrap this disposable graph with a minimal
+    // canonical write first. This keeps the test focused on memory behavior
+    // rather than FalkorDB's empty-graph semantics.
+    let bootstrap_graph = CodeGraph {
+        context: context.clone(),
+        entities: vec![GraphEntity {
+            id: format!("bootstrap:{}", graph_name),
+            kind: EntityKind::File,
+            name: "src/lib.rs".into(),
+            path: "src/lib.rs".into(),
+            line: 1,
+            context: context.clone(),
+            language: Some(codemind_engine::source::Language::Rust),
+            native_kind: Some("source_file".into()),
+            range: None,
+            resolution: ResolutionStatus::Resolved,
+            evidence: None,
+        }],
+        relationships: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+
+    storage.write_code_graph(&bootstrap_graph).await.unwrap();
 
     let graph_storage: &dyn GraphStorage = &storage;
 

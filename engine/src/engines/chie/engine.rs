@@ -6,6 +6,8 @@ use super::{
     risk::{assessment, factors::*},
     test_impact,
 };
+use chrono::Utc;
+
 use crate::engines::{
     coie::model::{CodeGraph, EntityKind},
     tie::model::{TestEntity, TestRelationship},
@@ -57,15 +59,26 @@ impl ChieEngine {
             return Err("test graph context does not match code graph context".to_owned());
         }
 
-        let mut paths = aggregation::deduplicate(traversal::traverse(
+        let traversal = traversal::traverse(
             &graph.relationships,
             selected_entity_id,
             self.max_depth,
-        ));
-        let truncated = paths.len() > crate::contract::result::MAX_PATHS;
+            crate::contract::result::MAX_PATHS,
+        );
+        let mut paths = aggregation::deduplicate(traversal.paths);
+        let truncated = traversal.truncated || paths.len() > crate::contract::result::MAX_PATHS;
         paths.truncate(crate::contract::result::MAX_PATHS);
 
-        let impacted_ids: Vec<String> = paths.iter().map(|path| path.entity_id.clone()).collect();
+        let impacted_ids: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            paths
+                .iter()
+                .filter_map(|path| {
+                    seen.insert(path.entity_id.clone())
+                        .then_some(path.entity_id.clone())
+                })
+                .collect()
+        };
         let candidates = test_impact::candidates(tests, test_relationships, &impacted_ids);
 
         let maximum_depth = paths.iter().map(|path| path.depth).max().unwrap_or(0);
@@ -88,7 +101,7 @@ impl ChieEngine {
 
         let risk_assessment = assessment::assess(RiskFactors {
             structural: StructuralExposure {
-                impacted_entities: paths.len(),
+                impacted_entities: impacted_ids.len(),
                 maximum_depth,
                 state: FactorState::Supported,
             },
@@ -111,6 +124,16 @@ impl ChieEngine {
         });
 
         let mut analysis = ChangeAnalysis {
+            analysis_id: format!(
+                "analysis-{}",
+                crate::source::identity::digest_text(&format!(
+                    "{}:{}:{}:{}",
+                    graph.context.repository_id,
+                    graph.context.source_snapshot_id,
+                    selected_entity_id,
+                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                ))
+            ),
             context: graph.context.clone(),
             selected_entity_id: selected_entity_id.to_owned(),
             impact_paths: paths.clone(),

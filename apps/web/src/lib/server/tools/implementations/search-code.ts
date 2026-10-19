@@ -1,5 +1,13 @@
+import { searchCode as searchCodeRpc } from "../../rust-client/client";
 import type { ToolInput } from "../schemas";
+import { canonicalToolResult } from "./canonical";
 
-export function searchCode(input: ToolInput) {
-  return { outcome: "unsupported", data: { query: input.query ?? "" }, limitations: ["Repository search is not exposed by the current Rust contract."] };
+export async function searchCode(input: ToolInput) {
+  if (!input.query) throw new Error("query is required");
+  const response = await searchCodeRpc({
+    query: input.query,
+    limit: input.limit ?? 20,
+    context: input.context,
+  });
+  return canonicalToolResult(response, input);
 }

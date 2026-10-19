@@ -17,6 +17,16 @@ use std::{
 };
 use tempfile::TempDir;
 
+type GithubRepository = (TempDir, PathBuf);
+
+type GithubTestGraph = (
+    PathBuf,
+    SourceSnapshot,
+    CodeGraph,
+    Vec<TestEntity>,
+    Vec<codemind_engine::engines::tie::model::TestRelationship>,
+);
+
 pub fn github_repository_url() -> String {
     std::env::var("CODEMIND_GITHUB_REPOSITORY")
         .unwrap_or_else(|_| "https://github.com/0xshariq/codemind".to_owned())
@@ -26,9 +36,8 @@ pub fn github_reference() -> String {
     std::env::var("CODEMIND_GITHUB_REF").unwrap_or_else(|_| "main".to_owned())
 }
 
-pub fn fetch_github_repository() -> (TempDir, PathBuf) {
+fn github_repository_parts() -> (String, String) {
     let repository = github_repository_url();
-
     let repo = repository
         .trim_end_matches('/')
         .trim_end_matches(".git")
@@ -39,52 +48,102 @@ pub fn fetch_github_repository() -> (TempDir, PathBuf) {
     let mut parts = repo.split('/');
     let owner = parts.next().expect("GitHub owner is required");
     let name = parts.next().expect("GitHub repository name is required");
-    let reference = github_reference();
+    (owner.to_owned(), name.to_owned())
+}
 
-    let temp = tempfile::tempdir().expect("temporary directory");
-    let archive = temp.path().join("repository.tar.gz");
-
-    let api_url = format!("https://api.github.com/repos/{owner}/{name}/tarball/{reference}");
-
+fn github_curl_command() -> Command {
     let mut command = Command::new("curl");
-
     command
-        .arg("--fail")
         .arg("--silent")
         .arg("--show-error")
         .arg("--location")
         .arg("--retry")
         .arg("3")
+        .arg("--connect-timeout")
+        .arg("10")
+        .arg("--max-time")
+        .arg("60")
         .arg("--header")
         .arg("Accept: application/vnd.github+json")
         .arg("--header")
-        .arg("User-Agent: CodeMind-Level3-Test")
-        .arg("--output")
-        .arg(&archive)
-        .arg(&api_url);
+        .arg("User-Agent: CodeMind-Level3-Test");
 
     if let Ok(token) = std::env::var("GITHUB_TOKEN")
         && !token.trim().is_empty()
     {
-        command = Command::new("curl");
-
         command
-            .arg("--fail")
-            .arg("--silent")
-            .arg("--show-error")
-            .arg("--location")
-            .arg("--retry")
-            .arg("3")
             .arg("--header")
-            .arg("Accept: application/vnd.github+json")
-            .arg("--header")
-            .arg("User-Agent: CodeMind-Level3-Test")
-            .arg("--header")
-            .arg(format!("Authorization: Bearer {token}"))
-            .arg("--output")
-            .arg(&archive)
-            .arg(&api_url);
+            .arg(format!("Authorization: Bearer {token}"));
     }
+
+    command
+}
+
+/// Check the configured GitHub repository before any source download or graph
+/// construction starts. A 404 means the repository is not accessible through
+/// the configured GitHub identity, so Level 3 GitHub-backed tests should skip.
+pub fn github_repository_exists() -> bool {
+    let (owner, name) = github_repository_parts();
+    let api_url = format!("https://api.github.com/repos/{owner}/{name}");
+
+    let mut command = github_curl_command();
+    command
+        .arg("--write-out")
+        .arg("%{http_code}")
+        .arg("--output")
+        .arg("/dev/null");
+    command.arg(&api_url);
+
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("skipping GitHub-backed Level 3 tests: unable to run curl: {error}");
+            return false;
+        }
+    };
+
+    if !output.status.success() {
+        eprintln!(
+            "skipping GitHub-backed Level 3 tests: GitHub repository check failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return false;
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout);
+    if status.trim() == "200" {
+        return true;
+    }
+
+    eprintln!(
+        "skipping GitHub-backed Level 3 tests: repository {} returned HTTP {}",
+        github_repository_url(),
+        status.trim()
+    );
+    false
+}
+
+pub fn fetch_github_repository() -> GithubRepository {
+    assert!(
+        github_repository_exists(),
+        "configured GitHub repository does not exist or is not accessible"
+    );
+
+    let (owner, name) = github_repository_parts();
+    let reference = github_reference();
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let archive = temp.path().join("repository.tar.gz");
+    let api_url = format!("https://api.github.com/repos/{owner}/{name}/tarball/{reference}");
+
+    let mut command = github_curl_command();
+    command
+        .arg("--max-time")
+        .arg("300")
+        .arg("--fail")
+        .arg("--output")
+        .arg(&archive)
+        .arg(&api_url);
 
     let status = command
         .status()
@@ -112,15 +171,83 @@ pub fn fetch_github_repository() -> (TempDir, PathBuf) {
     (temp, root)
 }
 
-pub fn github_snapshot() -> (TempDir, PathBuf, SourceSnapshot) {
-    let (temp, root) = fetch_github_repository();
-    let provider = SourceProvider::default();
+struct GithubSnapshotFixture {
+    _temp: TempDir,
+    root: PathBuf,
+    snapshot: SourceSnapshot,
+}
 
-    let snapshot = provider
-        .resolve_with_repository_identity(&root, "codemind-level3", Some(&github_repository_url()))
-        .expect("GitHub repository must be captured into an immutable snapshot");
+static GITHUB_SNAPSHOT: std::sync::OnceLock<Option<GithubSnapshotFixture>> =
+    std::sync::OnceLock::new();
 
-    (temp, root, snapshot)
+/// Capture the GitHub repository once per test process. The immutable snapshot
+/// is cloned for each test so the expensive GitHub download and source capture
+/// do not run once per Level 3 engine test.
+pub fn github_snapshot() -> Option<(PathBuf, SourceSnapshot)> {
+    let fixture = GITHUB_SNAPSHOT.get_or_init(|| {
+        if !github_repository_exists() {
+            return None;
+        }
+
+        let (temp, root) = fetch_github_repository();
+        let provider = SourceProvider::default();
+        let snapshot = provider
+            .resolve_with_repository_identity(
+                &root,
+                "codemind-level3",
+                Some(&github_repository_url()),
+            )
+            .expect("GitHub repository must be captured into an immutable snapshot");
+
+        Some(GithubSnapshotFixture {
+            _temp: temp,
+            root,
+            snapshot,
+        })
+    });
+
+    fixture
+        .as_ref()
+        .map(|fixture| (fixture.root.clone(), fixture.snapshot.clone()))
+}
+
+pub fn github_code_graph() -> Option<(PathBuf, SourceSnapshot, CodeGraph)> {
+    static CODE_GRAPH: std::sync::OnceLock<Option<(PathBuf, SourceSnapshot, CodeGraph)>> =
+        std::sync::OnceLock::new();
+
+    let value = CODE_GRAPH.get_or_init(|| {
+        let (root, snapshot) = github_snapshot()?;
+        let code_graph = codemind_engine::engines::coie::CoieEngine
+            .extract(&snapshot)
+            .expect("CoIE extraction");
+        Some((root, snapshot, code_graph))
+    });
+
+    value
+        .as_ref()
+        .map(|(root, snapshot, graph)| (root.clone(), snapshot.clone(), graph.clone()))
+}
+
+pub fn github_test_graph() -> Option<GithubTestGraph> {
+    static TEST_GRAPH: std::sync::OnceLock<Option<GithubTestGraph>> = std::sync::OnceLock::new();
+
+    let value = TEST_GRAPH.get_or_init(|| {
+        let (root, snapshot, code_graph) = github_code_graph()?;
+        let (tests, relationships) = mapped_test_graph(&snapshot, &code_graph);
+        Some((root, snapshot, code_graph, tests, relationships))
+    });
+
+    value
+        .as_ref()
+        .map(|(root, snapshot, graph, tests, relationships)| {
+            (
+                root.clone(),
+                snapshot.clone(),
+                graph.clone(),
+                tests.clone(),
+                relationships.clone(),
+            )
+        })
 }
 
 pub async fn storage(graph_name: &str) -> FalkorDbStorage {
@@ -251,6 +378,9 @@ mod helper_usage {
     fn support_helpers_are_referenced() {
         let _ = github_repository_url;
         let _ = github_reference;
+        let _ = github_repository_exists;
+        let _ = github_code_graph;
+        let _ = github_test_graph;
         let _ = fetch_github_repository;
         let _ = github_snapshot;
         let _ = storage;

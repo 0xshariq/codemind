@@ -1,4 +1,4 @@
-// Original file: /home/sharique/desktop/hackathon/codemind/proto/v1/repository.proto
+// Original file: ../../proto/v1/repository.proto
 
 import type * as grpc from '@grpc/grpc-js'
 import type { MethodDefinition } from '@grpc/proto-loader'

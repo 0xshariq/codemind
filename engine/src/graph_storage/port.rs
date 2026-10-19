@@ -14,6 +14,12 @@ pub struct GraphPath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyPathResult {
+    pub paths: Vec<GraphPath>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredTestGraph {
     pub tests: Vec<TestEntity>,
     pub relationships: Vec<TestRelationship>,
@@ -89,6 +95,13 @@ pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepositor
         entity_id: &str,
     ) -> Result<Option<GraphEntity>, StorageError>;
 
+    async fn search_code_entities(
+        &self,
+        context: &RepositoryContext,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphEntity>, StorageError>;
+
     async fn relationships_for(
         &self,
         context: &RepositoryContext,
@@ -97,6 +110,13 @@ pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepositor
     ) -> Result<Vec<GraphRelationship>, StorageError>;
 
     async fn incoming_relationships_for(
+        &self,
+        context: &RepositoryContext,
+        entity_id: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphRelationship>, StorageError>;
+
+    async fn dependency_incoming_relationships_for(
         &self,
         context: &RepositoryContext,
         entity_id: &str,
@@ -112,7 +132,7 @@ pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepositor
         entity_id: &str,
         max_depth: usize,
         max_paths: usize,
-    ) -> Result<Vec<GraphPath>, StorageError>;
+    ) -> Result<DependencyPathResult, StorageError>;
 
     async fn tests_for_context(
         &self,

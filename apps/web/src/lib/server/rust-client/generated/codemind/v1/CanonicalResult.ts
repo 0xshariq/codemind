@@ -1,4 +1,4 @@
-// Original file: /home/sharique/desktop/hackathon/codemind/proto/v1/common.proto
+// Original file: ../../proto/v1/common.proto
 
 import type { Outcome as _codemind_v1_Outcome, Outcome__Output as _codemind_v1_Outcome__Output } from '../../codemind/v1/Outcome';
 import type { Completeness as _codemind_v1_Completeness, Completeness__Output as _codemind_v1_Completeness__Output } from '../../codemind/v1/Completeness';
@@ -14,7 +14,7 @@ export interface CanonicalResult {
   'freshness'?: (_codemind_v1_Freshness);
   'context'?: (_codemind_v1_RepositoryContext | null);
   'correlation'?: (_codemind_v1_Correlation | null);
-  'data_json'?: (string);
+  'dataJson'?: (string);
   'evidence'?: (_codemind_v1_SourceReference)[];
   'diagnostics'?: (_codemind_v1_Diagnostic)[];
   'limitations'?: (string)[];
@@ -26,7 +26,7 @@ export interface CanonicalResult__Output {
   'freshness'?: (_codemind_v1_Freshness__Output);
   'context'?: (_codemind_v1_RepositoryContext__Output);
   'correlation'?: (_codemind_v1_Correlation__Output);
-  'data_json'?: (string);
+  'dataJson'?: (string);
   'evidence'?: (_codemind_v1_SourceReference__Output)[];
   'diagnostics'?: (_codemind_v1_Diagnostic__Output)[];
   'limitations'?: (string)[];

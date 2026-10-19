@@ -1,11 +1,11 @@
-// Original file: /home/sharique/desktop/hackathon/codemind/proto/v1/operation.proto
+// Original file: ../../proto/v1/operation.proto
 
 import type { Correlation as _codemind_v1_Correlation, Correlation__Output as _codemind_v1_Correlation__Output } from '../../codemind/v1/Correlation';
 import type { RepositoryContext as _codemind_v1_RepositoryContext, RepositoryContext__Output as _codemind_v1_RepositoryContext__Output } from '../../codemind/v1/RepositoryContext';
 import type { Long } from '@grpc/proto-loader';
 
 export interface ProgressEvent {
-  'event_id'?: (string);
+  'eventId'?: (string);
   'sequence'?: (number | string | Long);
   'engine'?: (string);
   'stage'?: (string);
@@ -13,10 +13,11 @@ export interface ProgressEvent {
   'correlation'?: (_codemind_v1_Correlation | null);
   'context'?: (_codemind_v1_RepositoryContext | null);
   'message'?: (string);
+  'stageState'?: (string);
 }
 
 export interface ProgressEvent__Output {
-  'event_id'?: (string);
+  'eventId'?: (string);
   'sequence'?: (string);
   'engine'?: (string);
   'stage'?: (string);
@@ -24,4 +25,5 @@ export interface ProgressEvent__Output {
   'correlation'?: (_codemind_v1_Correlation__Output);
   'context'?: (_codemind_v1_RepositoryContext__Output);
   'message'?: (string);
+  'stageState'?: (string);
 }

@@ -1,32 +1,24 @@
 import { NextResponse } from "next/server";
+import { loadAuthenticatedSession } from "@/lib/server/auth/context";
+import { authorizeMemoryRequest } from "@/lib/server/auth/authorize";
+import { getRepository } from "@/lib/server/repositories/service";
 
-export async function GET(
-  _request: Request,
-  context: { params: Promise<{ repositoryId: string }> },
-) {
+export async function GET(request: Request, context: { params: Promise<{ repositoryId: string }> }) {
+  let session;
+  try { session = loadAuthenticatedSession(request); }
+  catch { return NextResponse.json({ outcome: "unauthorized", error: "Sign in to view repository details." }, { status: 401 }); }
   const { repositoryId } = await context.params;
-  if (!repositoryId.trim()) {
-    return NextResponse.json({ error: "repositoryId is required" }, { status: 400 });
+  if (!repositoryId.trim() || repositoryId.length > 1_024) {
+    return NextResponse.json({ outcome: "invalid", error: "A valid repository ID is required." }, { status: 400 });
   }
-  const configured = process.env.CODEMIND_REPOSITORIES_JSON;
-  if (configured) {
-    try {
-      const repositories = JSON.parse(configured) as unknown;
-      if (Array.isArray(repositories)) {
-        const repository = repositories.find(
-          (item): item is { repositoryId?: string } =>
-            !!item && typeof item === "object" && (item as { repositoryId?: unknown }).repositoryId === repositoryId,
-        );
-        if (repository) return NextResponse.json({ outcome: "success", repository });
-        return NextResponse.json({ outcome: "empty", repositoryId }, { status: 404 });
-      }
-    } catch {
-      return NextResponse.json({ outcome: "failed", error: "CODEMIND_REPOSITORIES_JSON is invalid" }, { status: 500 });
-    }
+  if (!authorizeMemoryRequest(session, session.workspaceId, "repository")) {
+    return NextResponse.json({ outcome: "forbidden", error: "Repository scope is not authorized." }, { status: 403 });
   }
-  return NextResponse.json({
-    repositoryId,
-    outcome: "unavailable",
-    limitations: ["Configure CODEMIND_REPOSITORIES_JSON for local repository discovery."],
-  });
+  try {
+    const repository = await getRepository(session.workspaceId, repositoryId);
+    if (!repository) return NextResponse.json({ outcome: "not_found", repositoryId }, { status: 404 });
+    return NextResponse.json({ outcome: repository.readiness === "partial" ? "partial" : "success", repository, limitations: repository.limitations }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return NextResponse.json({ outcome: "unavailable", error: "Repository service is unavailable." }, { status: 502 });
+  }
 }

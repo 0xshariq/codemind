@@ -4,10 +4,30 @@ import {
   retrieveHandoff,
   transitionHandoff,
 } from "@/lib/server/rust-client/client";
-import { handoffSchema, type Handoff } from "./schema";
+import { canTransitionHandoff, handoffSchema, type Handoff } from "./schema";
+import type { AuthenticatedSession } from "@/lib/server/auth/context";
+import { authorizeOperationOwner, authorizeRepositoryContext } from "@/lib/server/auth/authorize";
 
-export async function saveHandoff(input: Handoff) {
+async function authorizeHandoff(session: AuthenticatedSession, handoff: Handoff["context"], operationId: string) {
+  if (!await authorizeRepositoryContext(session, handoff) || !authorizeOperationOwner(session, operationId)) {
+    throw new Error("handoff context or operation is not authorized");
+  }
+}
+
+function camelize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(camelize);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()), camelize(child),
+  ]));
+}
+
+export async function saveHandoff(input: Handoff, session: AuthenticatedSession) {
   const handoff = handoffSchema.parse(input);
+  await authorizeHandoff(session, handoff.context, handoff.operationId);
+  if (handoff.status !== "pending" || handoff.version !== 0) {
+    throw new Error("new handoffs must begin pending at version zero");
+  }
   const payload = {
     handoff_id: handoff.handoffId,
     schema_version: handoff.schemaVersion,
@@ -41,20 +61,37 @@ export async function saveHandoff(input: Handoff) {
     status: handoff.status,
     payloadJson: JSON.stringify(payload),
     context: handoff.context,
-  }, handoff.idempotencyKey);
+  }, handoff.idempotencyKey, session.userId);
 }
 
 export async function loadHandoff(
   handoffId: string,
   context: Handoff["context"],
+  session: AuthenticatedSession,
+  operationId: string,
 ) {
-  return retrieveHandoff(handoffId, context);
+  await authorizeHandoff(session, context, operationId);
+  return retrieveHandoff(handoffId, context, session.userId);
 }
 
 export async function updateHandoff(
   handoffId: string,
   status: Handoff["status"],
   context: Handoff["context"],
+  session: AuthenticatedSession,
+  operationId: string,
 ) {
-  return transitionHandoff(handoffId, status, context);
+  await authorizeHandoff(session, context, operationId);
+  const current = await retrieveHandoff(handoffId, context, session.userId);
+  const storedHandoff = current.handoff && typeof current.handoff === "object" ? current.handoff as Record<string, unknown> : null;
+  const raw = storedHandoff && typeof (storedHandoff.payloadJson ?? storedHandoff.payload_json) === "string"
+    ? String(storedHandoff.payloadJson ?? storedHandoff.payload_json) : null;
+  if (!raw) throw new Error("handoff record is unavailable");
+  const stored = handoffSchema.parse(camelize(JSON.parse(raw)));
+  if (stored.operationId !== operationId || stored.context.repositoryId !== context.repositoryId
+    || stored.context.sourceSnapshotId !== context.sourceSnapshotId || stored.context.graphVersion !== context.graphVersion) {
+    throw new Error("handoff record context does not match the authorized operation");
+  }
+  if (!canTransitionHandoff(stored.status, status)) throw new Error("handoff lifecycle transition is invalid");
+  return transitionHandoff(handoffId, status, context, session.userId);
 }

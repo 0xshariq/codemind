@@ -70,6 +70,7 @@ mod tests {
     #[test]
     fn graph_builder_rejects_missing_selection() {
         let analysis = ChangeAnalysis {
+            analysis_id: "analysis-test".into(),
             context: RepositoryContext {
                 repository_id: "repo".into(),
                 workspace_id: "workspace".into(),

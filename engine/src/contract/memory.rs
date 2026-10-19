@@ -1,6 +1,9 @@
 use super::{context::RepositoryContext, error::ContractError};
 use crate::memory::{
-    model::{HandoffRecord, MAX_PAYLOAD_BYTES, MemoryRecord, ReviewContextRecord},
+    model::{
+        HandoffRecord, MAX_PAYLOAD_BYTES, MAX_REVIEW_CONTEXT_BYTES, MemoryRecord,
+        ReviewContextRecord,
+    },
     validation,
 };
 use serde::{Deserialize, Serialize};
@@ -216,7 +219,7 @@ impl ReviewWriteRequest {
             }
         }
         let payload_size = serde_json::to_vec(&self.record)?.len();
-        if payload_size > MAX_PAYLOAD_BYTES {
+        if payload_size > MAX_REVIEW_CONTEXT_BYTES {
             return Err(ContractError::LimitExceeded(
                 "review record exceeds the bounded payload size".to_owned(),
             ));
@@ -356,6 +359,16 @@ mod tests {
             ReviewWriteRequest {
                 context: context.clone(),
                 record: review.clone()
+            }
+            .validate()
+            .is_ok()
+        );
+        let mut multi_turn_review = review.clone();
+        multi_turn_review.turns[0].summary = "x".repeat(20 * 1024);
+        assert!(
+            ReviewWriteRequest {
+                context: context.clone(),
+                record: multi_turn_review,
             }
             .validate()
             .is_ok()

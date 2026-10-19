@@ -3,7 +3,10 @@ pub mod port;
 
 pub use crate::memory::repository::MemoryRepository;
 pub use falkordb::FalkorDbStorage;
-pub use port::{DerivedRelationship, GraphPath, GraphStorage, StorageError, StoredTestGraph};
+pub use port::{
+    DependencyPathResult, DerivedRelationship, GraphPath, GraphStorage, StorageError,
+    StoredTestGraph,
+};
 
 #[cfg(test)]
 mod tests {

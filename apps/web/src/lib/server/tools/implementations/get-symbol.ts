@@ -1,7 +1,14 @@
 import type { ToolInput } from "../schemas";
 
 export function getSymbol(input: ToolInput) {
-  return input.symbolId
-    ? { outcome: "unsupported", data: { symbolId: input.symbolId }, limitations: ["Symbol detail query is not exposed by the Day 1 Rust contract."] }
-    : { outcome: "invalid", data: null, limitations: ["symbolId is required"] };
+  return {
+    outcome: "unsupported",
+    completeness: "incomplete",
+    freshness: "unknown",
+    context: input.context,
+    data: { symbolId: input.symbolId },
+    evidence: [],
+    diagnostics: [],
+    limitations: ["The Rust intelligence contract does not expose a standalone symbol-detail query."],
+  };
 }

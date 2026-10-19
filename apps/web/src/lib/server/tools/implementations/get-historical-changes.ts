@@ -1,3 +1,14 @@
-export function getHistoricalChanges() {
-  return { outcome: "unsupported", data: null, limitations: ["Historical changes require a persisted change-history contract."] };
+import type { ToolInput } from "../schemas";
+
+export function getHistoricalChanges(input: ToolInput) {
+  return {
+    outcome: "unsupported",
+    completeness: "incomplete",
+    freshness: "unknown",
+    context: input.context,
+    data: { changes: [] },
+    evidence: [],
+    diagnostics: [],
+    limitations: ["The Rust contract does not expose persisted change history."],
+  };
 }

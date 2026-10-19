@@ -14,7 +14,9 @@ mod integration_tests {
             classification: ImpactClassification::Direct,
             relationships: Vec::new(),
         };
+
         assert_eq!(deduplicate(vec![path.clone(), path]).len(), 1);
-        assert!(traverse(&[], "target", 3).is_empty());
+
+        assert!(traverse(&[], "target", 3, 10).paths.is_empty());
     }
 }
