@@ -2,24 +2,7 @@ import { ArrowDownRight, Network } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export function ImpactCard({
-  directCount,
-  indirectCount,
-  paths,
-  completeness,
-  onSelectPath,
-}: {
-  directCount?: number;
-  indirectCount?: number;
-  paths: readonly { id: string; label: string; classification: string; depth: number }[];
-  completeness: string;
-  onSelectPath?: (id: string) => void;
-}) {
-  return <Card className="border-border bg-card">
-    <CardHeader><CardTitle className="flex items-center gap-2"><Network aria-hidden="true" className="size-5 text-primary" />Change impact</CardTitle><CardDescription>Canonical direct and indirect paths are shown separately from risk.</CardDescription></CardHeader>
-    <CardContent className="grid gap-3">
-      <div className="flex flex-wrap gap-2">{directCount !== undefined && <Badge variant="outline">{directCount} direct</Badge>}{indirectCount !== undefined && <Badge variant="secondary">{indirectCount} indirect</Badge>}<Badge variant="outline">{completeness.replaceAll("_", " ")}</Badge></div>
-      {paths.length === 0 ? <p className="text-sm text-muted-foreground">No impact paths were returned.</p> : <ul className="grid gap-2">{paths.slice(0, 200).map((path) => <li key={path.id}><button type="button" onClick={() => onSelectPath?.(path.id)} disabled={!onSelectPath} className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-left disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="flex min-w-0 items-center gap-2"><ArrowDownRight aria-hidden="true" className="size-4 shrink-0 text-primary" /><code className="break-all text-sm">{path.label}</code></span><span className="shrink-0 text-xs text-muted-foreground">{path.classification.replaceAll("_", " ")} · depth {path.depth}</span></button></li>)}</ul>}
-    </CardContent>
-  </Card>;
+export function ImpactCard({ directCount, indirectCount, paths, completeness, onSelectPath }: { directCount?: number; indirectCount?: number; paths: readonly { id: string; label: string; classification: string; depth: number }[]; completeness: string; onSelectPath?: (id: string) => void }) {
+  return <Card className="border-border bg-surface"><CardHeader><CardTitle className="flex items-center gap-2"><Network aria-hidden="true" className="size-5 text-primary" />Impact Analysis</CardTitle><CardDescription>Dependency impact is derived from canonical ChIE paths. Risk and confidence are shown separately.</CardDescription></CardHeader><CardContent className="grid gap-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{directCount !== undefined && <Metric label="Direct paths" value={directCount} />}{indirectCount !== undefined && <Metric label="Indirect paths" value={indirectCount} />}<Metric label="Completeness" value={completeness.replaceAll("_", " ")} /></div>{paths.length === 0 ? <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">No impact paths were returned by the canonical result.</p> : <ol className="grid gap-2">{paths.slice(0, 200).map((path, index) => <li key={path.id}><button type="button" disabled={!onSelectPath} onClick={() => onSelectPath?.(path.id)} className="flex min-h-12 w-full items-center justify-between gap-3 rounded-lg border border-border/80 bg-background/40 px-3 py-2 text-left hover:border-primary/60 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="flex min-w-0 items-center gap-2"><span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary/10 text-xs text-primary">{index + 1}</span><span className="min-w-0"><code className="block break-all text-sm">{path.label}</code><span className="text-xs text-muted-foreground">{path.classification.replaceAll("_", " ")}</span></span></span><span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"><ArrowDownRight aria-hidden="true" className="size-3.5 text-primary" />depth {path.depth}</span></button></li>)}</ol>}</CardContent></Card>;
 }
+function Metric({ label, value }: { label: string; value: number | string }) { return <div className="rounded-lg border border-border bg-background/40 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-sm font-semibold capitalize">{value}</p></div>; }

@@ -39,7 +39,7 @@ function normalizeEvent(value: Record<string, unknown>): RustProgressEvent {
       : /\bcompleted\b/i.test(message) ? "completed"
         : /\bstarted\b/i.test(message) ? "running" : "unknown";
   return {
-    eventId: typeof value.eventId === "string" ? value.eventId : "",
+    eventId: typeof value.eventId === "string" && value.eventId.trim() ? value.eventId : `event:${sequence}`,
     sequence,
     engine: typeof value.engine === "string" ? value.engine : "unknown",
     stage: typeof value.stage === "string" ? value.stage : "unknown",
@@ -89,10 +89,22 @@ export async function* streamRustProgress(input: {
 
   const abort = () => stream.cancel();
   input.signal?.addEventListener("abort", abort, { once: true });
+  let lastSequence = input.afterSequence;
   try {
     for await (const event of stream) {
       if (input.signal?.aborted) return;
-      yield normalizeEvent(event);
+      const normalized = normalizeEvent(event);
+      if (normalized.sequence <= lastSequence) continue;
+      if (normalized.context) {
+        const context = normalized.context;
+        const matches = (context.repositoryId ?? context.repository_id) === input.context.repositoryId
+          && (context.workspaceId ?? context.workspace_id) === input.context.workspaceId
+          && (context.sourceSnapshotId ?? context.source_snapshot_id) === input.context.sourceSnapshotId
+          && (context.graphVersion ?? context.graph_version) === input.context.graphVersion;
+        if (!matches) throw new Error("Rust progress context does not match the authorized operation context");
+      }
+      lastSequence = normalized.sequence;
+      yield normalized;
     }
   } finally {
     input.signal?.removeEventListener("abort", abort);

@@ -26,6 +26,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-text-muted: var(--text-muted);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
   --color-input: var(--input);
@@ -52,7 +53,7 @@
   --radius-xl: var(--radius-xl-token);
   --radius-2xl: calc(var(--radius-xl-token) * 1.25);
   --radius-3xl: calc(var(--radius-xl-token) * 1.5);
-  --radius-4xl: calc(var(--radius-xl-token) * 1.5);
+  --radius-4xl: var(--radius-xl-token);
 }
 
 :root {
@@ -103,7 +104,7 @@
   --chart-5: var(--danger);
 
   --font-ui: Inter, system-ui, sans-serif;
-  --font-code: var(--font-geist-mono), "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --font-code: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 
   --space-1: 4px;
   --space-2: 8px;

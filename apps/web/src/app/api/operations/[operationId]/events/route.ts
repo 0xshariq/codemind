@@ -18,15 +18,16 @@ async function* streamLocalProgress(operationId: string, afterSequence: number, 
       if (item.sequence <= last) continue;
       last = item.sequence;
       yield {
-        eventId: `${operationId}:${item.sequence}`,
+        eventId: item.progressEventId ?? `${operationId}:${item.sequence}`,
         operationId,
         sequence: item.sequence,
-        engine: "agent-runtime",
-        stage: item.status,
+        engine: item.engine ?? "agent-runtime",
+        stage: item.stage ?? item.status,
+        stageState: item.stageState ?? (item.lifecycle === "completed" ? "completed" : item.lifecycle === "failed" ? "failed" : "running"),
         timestamp: item.timestamp,
         message: item.message ?? "",
         context: null,
-        correlation: null,
+        correlation: item.correlationId ? { operationId: item.correlationId } : null,
       };
     }
     const status = events.at(-1)?.status;

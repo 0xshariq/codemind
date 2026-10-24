@@ -1,18 +1,11 @@
-import { Check, CircleHelp } from "lucide-react";
+import { ArrowRight, CircleHelp } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 
 export type Recommendation = { id: string; title: string; detail?: string; priority?: string; evidence?: readonly string[] };
-
-export function RecommendationsPanel({
-  recommendations,
-  availability = "available",
-}: {
-  recommendations: readonly Recommendation[];
-  availability?: "available" | "unsupported" | "unavailable";
-}) {
-  if (availability !== "available") return <EmptyState title={availability === "unsupported" ? "Recommendations unsupported" : "Recommendations unavailable"} description="The engine did not return recommendation data for this result." icon={<CircleHelp className="size-6" />} />;
+export function RecommendationsPanel({ recommendations, availability = "available", onSelect }: { recommendations: readonly Recommendation[]; availability?: "available" | "unsupported" | "unavailable"; onSelect?: (id: string) => void }) {
+  if (availability !== "available") return <EmptyState title={availability === "unsupported" ? "Recommendations unsupported" : "Recommendations unavailable"} description="The canonical result did not provide recommendation data." icon={<CircleHelp className="size-6" />} />;
   const unique = [...new Map(recommendations.map((item) => [item.id, item])).values()].slice(0, 100);
-  if (unique.length === 0) return <EmptyState title="No recommendations returned" description="No recommended follow-up actions or tests were supported by the available evidence." />;
-  return <section className="grid gap-3" aria-label="Recommendations"><ul className="grid gap-2">{unique.map((item) => <li key={item.id} className="grid gap-2 rounded-lg border border-border bg-surface p-3"><div className="flex flex-wrap items-center gap-2"><Check aria-hidden="true" className="size-4 text-primary" /><span className="text-sm font-medium">{item.title}</span>{item.priority && <Badge variant="outline">{item.priority.replaceAll("_", " ")}</Badge>}</div>{item.detail && <p className="text-sm text-muted-foreground">{item.detail}</p>}{item.evidence?.length ? <ul className="grid gap-1 border-t border-border pt-2">{item.evidence.slice(0, 20).map((source, index) => <li key={`${index}-${source}`} className="break-all font-mono text-xs text-muted-foreground">Evidence: {source}</li>)}</ul> : <p className="text-xs text-muted-foreground">No supporting evidence reference was supplied.</p>}</li>)}</ul></section>;
+  if (!unique.length) return <EmptyState title="No recommendations" description="No evidence-backed follow-up action was returned for this analysis." />;
+  return <section className="grid gap-3" aria-label="Recommendations"><div><h2 className="text-base font-semibold">Recommendations</h2><p className="mt-1 text-sm text-muted-foreground">Follow-up actions supported by the available evidence.</p></div><ol className="grid gap-2">{unique.map((item, index) => <li key={item.id} className="rounded-xl border border-border bg-surface p-4"><div className="flex items-start gap-3"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-medium">{item.title}</h3>{item.priority && <Badge variant="outline">{item.priority.replaceAll("_", " ")}</Badge>}</div>{item.detail && <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.detail}</p>}{item.evidence?.length ? <ul className="mt-3 grid gap-1 border-t border-border pt-2">{item.evidence.slice(0, 20).map((source, sourceIndex) => <li key={`${sourceIndex}-${source}`} className="break-all font-mono text-xs text-muted-foreground">Evidence: {source}</li>)}</ul> : <p className="mt-3 text-xs text-muted-foreground">No supporting evidence reference was supplied.</p>}</div>{onSelect && <button type="button" onClick={() => onSelect(item.id)} aria-label={`Open recommendation ${item.title}`} className="grid size-8 shrink-0 place-items-center rounded-md border border-border hover:bg-surface-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><ArrowRight className="size-4" /></button>}</div></li>)}</ol></section>;
 }

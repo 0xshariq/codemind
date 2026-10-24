@@ -32,3 +32,12 @@ describe("Rust progress mapping", () => {
     });
   });
 });
+
+describe("Rust progress lifecycle semantics", () => {
+  it("maps reasoning stages explicitly", () => {
+    expect(rustProgressState("operation", 8, { eventId: "event", sequence: 8, engine: "llm", stage: "LLM reasoning", stageState: "running", timestamp: "2026-10-18T12:00:00Z", correlation: null, context: null, message: "Preparing response" }).status).toBe("reasoning");
+  });
+  it("fails closed when Rust explicitly reports a failed stage", () => {
+    expect(rustProgressState("operation", 8, { eventId: "event", sequence: 8, engine: "codemind", stage: "unknown stage", stageState: "failed", timestamp: "2026-10-18T12:00:00Z", correlation: null, context: null, message: "failed" })).toMatchObject({ status: "failed", lifecycle: "failed", outcome: "unavailable" });
+  });
+});

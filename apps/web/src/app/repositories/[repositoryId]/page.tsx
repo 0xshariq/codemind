@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ExternalLink, FolderGit2, GitBranch, LoaderCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { ErrorState } from "@/components/common/error-state";
+import { LoadingState } from "@/components/common/loading-state";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 type Repository = {
@@ -114,9 +116,9 @@ export default function RepositoryPage({ params }: PageProps<"/repositories/[rep
     }
   }
 
-  if (state.kind === "loading") return <main className="mx-auto grid w-full max-w-6xl gap-4 p-4 sm:p-6" aria-busy="true"><div className="h-9 w-48 animate-pulse rounded bg-muted" /><div className="h-48 animate-pulse rounded-xl bg-surface-alt" /><p role="status" className="sr-only">Loading repository details</p></main>;
+  if (state.kind === "loading") return <main className="mx-auto w-full max-w-6xl p-4 sm:p-6 lg:p-8"><LoadingState label="Loading repository" detail="Restoring readiness, source snapshot and graph context." /></main>;
 
-  if (state.kind !== "ready") return <main className="mx-auto w-full max-w-4xl p-4 sm:p-6"><Card role={state.kind === "not-found" ? "status" : "alert"}><CardHeader><CardTitle>{state.kind === "not-found" ? "Repository not found" : "Repository details unavailable"}</CardTitle><CardDescription>{state.kind === "not-found" ? "This repository is not available in the current workspace." : "The repository service could not return canonical repository state."}</CardDescription></CardHeader><CardContent><Link href="/repositories" className="text-sm text-primary hover:underline">Back to repositories</Link></CardContent></Card></main>;
+  if (state.kind !== "ready") return <main className="mx-auto w-full max-w-4xl p-4 sm:p-6 lg:p-8">{state.kind === "not-found" ? <Card><CardHeader><CardTitle>Repository not found</CardTitle><CardDescription>This repository is not available in the current workspace.</CardDescription></CardHeader><CardContent><Link href="/repositories" className="text-sm text-primary hover:underline">Back to repositories</Link></CardContent></Card> : <ErrorState title="Repository details unavailable" description="The repository service could not return canonical repository state." action={<Link href="/repositories" className="inline-flex min-h-10 items-center rounded-md border border-border px-4 text-sm hover:bg-surface-alt">Back to repositories</Link>} />}</main>;
 
   const { repository } = state;
     const ready = ["ready", "indexed", "partial"].includes(repository.readiness.toLowerCase());
@@ -140,8 +142,7 @@ export default function RepositoryPage({ params }: PageProps<"/repositories/[rep
             {repository.moduleCount !== undefined && <div><p className="text-xs text-muted-foreground">Modules</p><p className="mt-1 text-sm">{repository.moduleCount}</p></div>}
           </CardContent></Card>
 
-          <Card><CardHeader><CardTitle>Recent investigations</CardTitle><CardDescription>Repository-scoped investigation history.</CardDescription></CardHeader><CardContent><p className="text-sm text-muted-foreground">Recent investigation records are currently unavailable.</p></CardContent></Card>
-        </div>
+          </div>
 
         <Card><CardHeader><div className="flex items-center gap-2"><GitBranch aria-hidden="true" className="size-4 text-accent" /><CardTitle>Repository context</CardTitle></div></CardHeader><CardContent className="grid gap-4 text-sm">
           {repository.source && <div><p className="text-xs text-muted-foreground">Source type</p><p className="mt-1">{repository.source}</p></div>}
