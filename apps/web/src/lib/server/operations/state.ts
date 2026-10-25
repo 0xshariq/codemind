@@ -2,6 +2,7 @@ export type OperationStatus = "idle" | "planning" | "coie" | "tie" | "chie" | "r
 export type OperationLifecycle = "pending" | "running" | "completed" | "failed";
 export type OperationOutcome = "unknown" | "success" | "partial" | "invalid" | "unavailable" | "unsupported";
 export type OperationCompleteness = "unknown" | "complete" | "partial" | "truncated";
+export type OperationStageState = "pending" | "running" | "completed" | "skipped" | "failed" | "unknown";
 
 export type OperationState = {
   operationId: string;
@@ -11,7 +12,7 @@ export type OperationState = {
   correlationId?: string;
   engine?: string;
   stage?: string;
-  stageState?: string;
+  stageState?: OperationStageState | string;
   progressSequence?: number;
   progressEventId?: string;
   lifecycle?: OperationLifecycle;

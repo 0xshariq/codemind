@@ -1,25 +1,3 @@
 import { AlertTriangle, CircleCheck, CircleHelp, Scissors } from "lucide-react";
-
-const states = {
-  complete: { label: "Complete result", Icon: CircleCheck, style: "border-success/40 bg-success/5 text-success" },
-  partial: { label: "Partial result", Icon: AlertTriangle, style: "border-warning/40 bg-warning/5 text-warning" },
-  truncated: { label: "Truncated result", Icon: Scissors, style: "border-warning/40 bg-warning/5 text-warning" },
-  unknown: { label: "Completeness unknown", Icon: CircleHelp, style: "border-border bg-surface text-muted-foreground" },
-} as const;
-
-export function CompletenessNotice({
-  completeness,
-  limitations = [],
-}: {
-  completeness: string;
-  limitations?: readonly string[];
-}) {
-  const state = states[completeness.toLowerCase() as keyof typeof states] ?? states.unknown;
-  const { Icon } = state;
-  return (
-    <aside aria-label={state.label} className={`grid gap-2 rounded-lg border px-4 py-3 ${state.style}`}>
-      <div className="flex items-center gap-2 text-sm font-medium"><Icon aria-hidden="true" className="size-4" />{state.label}</div>
-      {limitations.length > 0 && <ul className="grid list-disc gap-1 pl-6 text-sm text-muted-foreground">{limitations.slice(0, 20).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>}
-    </aside>
-  );
-}
+const states = { complete: { label: "Complete result", Icon: CircleCheck, style: "border-success/40 bg-success/5 text-success" }, partial: { label: "Partial result", Icon: AlertTriangle, style: "border-warning/40 bg-warning/5 text-warning" }, truncated: { label: "Truncated result", Icon: Scissors, style: "border-warning/40 bg-warning/5 text-warning" }, incomplete: { label: "Incomplete result", Icon: AlertTriangle, style: "border-warning/40 bg-warning/5 text-warning" }, unknown: { label: "Completeness unknown", Icon: CircleHelp, style: "border-border bg-surface text-muted-foreground" } } as const;
+export function CompletenessNotice({ completeness, limitations = [] }: { completeness: string; limitations?: readonly string[] }) { const state = states[completeness.toLowerCase() as keyof typeof states] ?? states.unknown; const Icon = state.Icon; return <aside aria-label={state.label} className={`grid gap-2 rounded-lg border px-4 py-3 ${state.style}`}><div className="flex items-center gap-2 text-sm font-medium"><Icon className="size-4" />{state.label}</div>{limitations.length > 0 && <ul className="grid list-disc gap-1 pl-6 text-sm text-muted-foreground">{limitations.slice(0, 20).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>}</aside>; }

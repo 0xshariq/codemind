@@ -15,7 +15,7 @@ export function MessageList({
   messages: readonly ChatMessage[];
   streaming?: boolean;
 }) {
-  return <ol aria-label="Conversation messages" aria-live="polite" className="grid content-start gap-5">
+  return <ol aria-label="Conversation messages" aria-live="polite" className="grid content-start gap-6">
     {messages.slice(0, 500).map((message) => <li key={message.id}><MessageRenderer role={message.role} content={message.content} evidence={message.evidence} /></li>)}
     {streaming && <li role="status" className="flex items-center gap-2 pl-11 text-sm text-muted-foreground"><LoaderCircle aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />CodeMind is preparing an evidence-grounded response</li>}
   </ol>;

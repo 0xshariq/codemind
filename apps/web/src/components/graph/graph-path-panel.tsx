@@ -1,24 +1,9 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Route } from "lucide-react";
 import { CompletenessNotice } from "@/components/common/completeness-notice";
+import { EmptyState } from "@/components/common/empty-state";
+import { Badge } from "@/components/ui/badge";
 
-export type GraphPath = {
-  id: string;
-  classification: string;
-  entities: readonly { id: string; label: string }[];
-  relationships: readonly { kind: string; from: string; to: string }[];
-};
-
-export function GraphPathPanel({
-  paths,
-  completeness,
-  limitations = [],
-}: {
-  paths: readonly GraphPath[];
-  completeness: string;
-  limitations?: readonly string[];
-}) {
-  return <section className="grid gap-4" aria-label="Evidence paths"><div><h2 className="text-base font-semibold">How this result was reached</h2><p className="mt-1 text-sm text-muted-foreground">Relationship paths are shown as returned by the canonical graph analysis.</p></div>
-    <CompletenessNotice completeness={completeness} limitations={limitations} />
-    {paths.length === 0 ? <p className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">No explanatory paths were returned.</p> : <ol className="grid gap-3">{paths.slice(0, 200).map((path) => <li key={path.id} className="grid gap-3 rounded-lg border border-border bg-surface p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{path.classification.replaceAll("_", " ")}</p><ol className="grid gap-2">{path.relationships.slice(0, 100).map((relationship, index) => { const from = path.entities.find((entity) => entity.id === relationship.from)?.label ?? relationship.from; const to = path.entities.find((entity) => entity.id === relationship.to)?.label ?? relationship.to; return <li key={`${relationship.from}-${relationship.kind}-${relationship.to}-${index}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2"><span className="min-w-0"><code className="block break-all font-mono text-xs">{from}</code></span><span className="grid justify-items-center gap-1 text-[10px] text-muted-foreground"><span>{relationship.kind.replaceAll("_", " ")}</span><ArrowRight aria-hidden="true" className="size-4 text-primary" /></span><span className="min-w-0"><code className="block break-all font-mono text-xs">{to}</code></span></li>; })}</ol></li>)}</ol>}
-  </section>;
+export type GraphPath = { id: string; classification: string; entities: readonly { id: string; label: string }[]; relationships: readonly { kind: string; from: string; to: string; direction?: string }[] };
+export function GraphPathPanel({ paths, completeness, limitations = [] }: { paths: readonly GraphPath[]; completeness: string; limitations?: readonly string[] }) {
+  return <section className="grid gap-4" aria-label="Dependency paths"><div><h2 className="flex items-center gap-2 text-base font-semibold"><Route className="size-4 text-primary" />Evidence Paths</h2><p className="mt-1 text-sm text-muted-foreground">Each path retains relationship type, direction and the repository entities it connects.</p></div><CompletenessNotice completeness={completeness} limitations={limitations} />{paths.length === 0 ? <EmptyState title="No explanatory paths" description="No canonical impact path was returned for this analysis." /> : <ol className="grid gap-3">{paths.slice(0, 200).map((path, index) => <li key={path.id} className="rounded-xl border border-border bg-surface p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="grid size-7 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{index + 1}</span><span className="text-sm font-medium">{path.classification.replaceAll("_", " ")}</span></div><Badge variant="outline">{path.relationships.length} relationships</Badge></div><ol className="mt-3 grid gap-2">{path.relationships.slice(0, 100).map((relationship, relationshipIndex) => { const from = path.entities.find((entity) => entity.id === relationship.from)?.label ?? relationship.from; const to = path.entities.find((entity) => entity.id === relationship.to)?.label ?? relationship.to; return <li key={`${relationship.from}-${relationship.kind}-${relationship.to}-${relationshipIndex}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border/60 bg-background/40 p-2"><code className="break-all font-mono text-xs">{from}</code><span className="grid justify-items-center gap-1 text-[10px] text-muted-foreground"><span>{relationship.kind.replaceAll("_", " ")}{relationship.direction ? ` · ${relationship.direction}` : ""}</span><ArrowRight className="size-3.5 text-primary" /></span><code className="break-all font-mono text-xs">{to}</code></li>; })}</ol></li>)}</ol>}</section>;
 }

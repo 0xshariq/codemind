@@ -2,7 +2,7 @@ import type { HTMLAttributes } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-const chipVariants = cva("inline-flex w-fit items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium leading-none", {
+const chipVariants = cva("inline-flex w-fit items-center h-6 gap-1 rounded-full border px-2 text-xs font-medium leading-none", {
   variants: {
     variant: {
       default: "border-primary/30 bg-primary/10 text-primary",

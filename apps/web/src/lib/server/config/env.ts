@@ -89,9 +89,9 @@ export function getServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCon
   if (developmentAuthEnabled && env.NODE_ENV === "production") {
     throw new Error("CODEMIND_DEV_AUTH_ENABLED cannot be enabled in production");
   }
-  const developmentScopes = (env.CODEMIND_DEV_SCOPES ?? "user,repository").split(",").map((scope) => scope.trim()).filter(Boolean);
+  const developmentScopes: string[] = (env.CODEMIND_DEV_SCOPES ?? "user,repository").split(",").map((scope) => scope.trim()).filter((scope): scope is string => Boolean(scope));
   if (developmentScopes.some((scope) => !ALLOWED_SCOPES.has(scope))) throw new Error("CODEMIND_DEV_SCOPES contains an unsupported scope");
-  const developmentTeamIds = (env.CODEMIND_DEV_TEAM_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  const developmentTeamIds: string[] = (env.CODEMIND_DEV_TEAM_IDS ?? "").split(",").map((id) => id.trim()).filter((id): id is string => Boolean(id));
   if (developmentTeamIds.length > 100 || developmentTeamIds.some((id) => /[\u0000-\u001f\u007f]/.test(id) || id.length > 512)) {
     throw new Error("CODEMIND_DEV_TEAM_IDS is invalid");
   }

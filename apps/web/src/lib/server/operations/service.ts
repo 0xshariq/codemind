@@ -88,7 +88,7 @@ function persist(operationId: string) {
 }
 
 function scheduleEviction(operationId: string) {
-  setTimeout(() => {
+  const timer = setTimeout(() => {
     withOperationLock(operationId, () => {
       const stored = load(operationId, true);
       const last = stored.events.at(-1);
@@ -98,7 +98,9 @@ function scheduleEviction(operationId: string) {
       operationOwners.delete(operationId);
       try { unlinkSync(operationFile(operationId)); } catch { /* Already evicted. */ }
     });
-  }, TERMINAL_TTL_MS).unref?.();
+  }, TERMINAL_TTL_MS);
+  const maybeTimer = timer as unknown as { unref?: () => void };
+  maybeTimer.unref?.();
 }
 
 export function bindOperationOwner(operationId: string, owner: { userId: string; workspaceId: string }) {

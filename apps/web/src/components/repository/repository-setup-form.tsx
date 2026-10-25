@@ -1,69 +1,21 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { AlertCircle, GitBranch, HardDrive, LoaderCircle } from "lucide-react";
+import { AlertCircle, Check, GitBranch, HardDrive, Library, LoaderCircle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
+export type SetupOutcome = { outcome: string; repositoryId?: string; message?: string; limitations?: string[] };
 type SourceType = "github" | "local" | "example";
-type PrepareResponse = { outcome: string; repositoryId?: string; message?: string; limitations?: string[] };
+function validate(sourceType: SourceType, source: string) { if (sourceType === "example") return source.trim() ? "" : "Choose a configured example."; if (sourceType === "github") { try { const url = new URL(source); if (url.protocol !== "https:" || url.hostname !== "github.com" || url.pathname.split("/").filter(Boolean).length !== 2) return "Enter a valid https://github.com/owner/repository URL."; } catch { return "Enter a valid GitHub repository URL."; } } if (!source.trim()) return sourceType === "local" ? "Enter the configured server-side repository path." : "Enter the repository URL."; return ""; }
 
 export function RepositorySetupForm({ onPrepared }: { onPrepared?: (repositoryId: string) => void }) {
-  const [sourceType, setSourceType] = useState<SourceType>("github");
-  const [source, setSource] = useState("");
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<PrepareResponse | null>(null);
-  const [error, setError] = useState("");
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!name.trim()) {
-      setError("Enter a repository name.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    setMessage(null);
-    try {
-      const response = await fetch("/api/repositories", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sourceType, source: source.trim(), name: name.trim() || undefined }),
-      });
-      const payload: unknown = await response.json().catch(() => null);
-      const result: Partial<PrepareResponse> & { error?: unknown } = payload && typeof payload === "object" && !Array.isArray(payload)
-        ? payload as Partial<PrepareResponse> & { error?: unknown }
-        : {};
-      if (!response.ok) {
-        const apiMessage = typeof result.error === "string" ? result.error
-          : typeof result.message === "string" ? result.message : "Repository preparation failed.";
-        throw new Error(response.status === 401
-          ? `${apiMessage} Enable the local development session or sign in, then try again.`
-          : apiMessage);
-      }
-      if (typeof result.outcome !== "string") throw new Error("Repository preparation returned an invalid response.");
-      const prepared: PrepareResponse = { ...result, outcome: result.outcome };
-      setMessage(prepared);
-      if (prepared.repositoryId && (prepared.outcome === "completed" || prepared.outcome === "partial")) onPrepared?.(prepared.repositoryId);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Repository service is unavailable.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return <form onSubmit={submit} className="grid gap-5 rounded-xl border border-border bg-surface p-5">
-    <fieldset className="grid gap-3" disabled={busy}><legend className="text-sm font-medium">Choose a source</legend>
-      <div className="grid gap-2 sm:grid-cols-3">
-        {(["github", "local", "example"] as const).map((type) => <label key={type} className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm capitalize focus-within:ring-2 focus-within:ring-ring ${sourceType === type ? "border-primary bg-primary/5" : "border-border hover:bg-surface-alt"}`}>
-          <input type="radio" name="repository-source" value={type} checked={sourceType === type} onChange={() => setSourceType(type)} />
-          {type === "github" ? <GitBranch aria-hidden="true" className="size-4" /> : <HardDrive aria-hidden="true" className="size-4" />}{type === "github" ? "GitHub repository" : type === "local" ? "Local path" : "Demo workspace"}
-        </label>)}
-      </div>
-    </fieldset>
-    <label className="grid gap-1 text-sm"><span>{sourceType === "github" ? "GitHub repository URL" : sourceType === "local" ? "Server-side local path" : "Configured example name"}</span><input required value={source} onChange={(event) => setSource(event.target.value)} maxLength={1024} placeholder={sourceType === "github" ? "https://github.com/owner/repository" : sourceType === "local" ? "/workspace/repository" : "Demo Workspace"} disabled={busy} className="min-h-10 rounded-md border border-border bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
-    <label className="grid gap-1 text-sm"><span>Repository name</span><input required value={name} onChange={(event) => setName(event.target.value)} maxLength={120} disabled={busy} className="min-h-10 rounded-md border border-border bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60" /></label>
-    <button type="submit" disabled={busy || !source.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50">{busy ? <><LoaderCircle aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />Preparing source</> : "Prepare repository"}</button>
-    {error && <p role="alert" className="flex gap-2 text-sm text-danger"><AlertCircle aria-hidden="true" className="size-4 shrink-0" />{error}</p>}
-    {message && <div role="status" className="grid gap-1 rounded-md border border-border p-3 text-sm"><p>{message.message ?? `Repository preparation ${message.outcome}.`}</p>{message.limitations?.map((item) => <p key={item} className="text-xs text-muted-foreground">{item}</p>)}</div>}
+  const [sourceType, setSourceType] = useState<SourceType>("github"); const [source, setSource] = useState(""); const [name, setName] = useState(""); const [busy, setBusy] = useState(false); const [result, setResult] = useState<SetupOutcome | null>(null); const [error, setError] = useState(""); const sourceError = validate(sourceType, source); const activeStep = result ? ["completed", "partial"].includes(result.outcome) ? 4 : 3 : sourceType ? 2 : 1;
+  async function submit(event: FormEvent) { event.preventDefault(); setError(""); setResult(null); if (sourceError || !name.trim()) { setError(sourceError || "Enter a repository name."); return; } setBusy(true); try { const response = await fetch("/api/repositories", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceType, source: source.trim(), name: name.trim() }) }); const value = await response.json().catch(() => null) as Partial<SetupOutcome> & { error?: unknown }; if (!response.ok) throw new Error(typeof value.error === "string" ? value.error : "Repository preparation failed."); if (typeof value.outcome !== "string") throw new Error("Repository preparation returned an invalid state."); const next = value as SetupOutcome; setResult(next); if (next.repositoryId && ["completed", "partial"].includes(next.outcome)) onPrepared?.(next.repositoryId); } catch (reason) { setError(reason instanceof Error ? reason.message : "Repository service is unavailable."); } finally { setBusy(false); } }
+  return <form onSubmit={submit} className="grid gap-5 rounded-xl border border-border bg-surface p-5"><Stepper active={activeStep} /><fieldset disabled={busy} className="grid gap-3"><legend className="text-base font-semibold">1. Choose Repository Type</legend><div className="grid gap-3 md:grid-cols-3">{(["github", "local", "example"] as const).map((type) => { const Icon = type === "github" ? GitBranch : type === "local" ? HardDrive : Library; return <label key={type} className={`grid min-h-32 cursor-pointer gap-3 rounded-xl border p-4 focus-within:ring-2 focus-within:ring-ring ${sourceType === type ? "border-primary bg-primary/5" : "border-border hover:bg-surface-alt"}`}><span className="flex items-center justify-between"><Icon className="size-6 text-primary" /><input type="radio" name="sourceType" value={type} checked={sourceType === type} onChange={() => { setSourceType(type); setSource(""); setResult(null); }} /></span><span className="font-medium">{type === "github" ? "GitHub Repository" : type === "local" ? "Local Repository" : "Example Repository"}</span><span className="text-sm text-muted-foreground">{type === "github" ? "Connect a configured GitHub source." : type === "local" ? "Use a server-configured local path." : "Try a pre-configured example repository."}</span></label>; })}</div></fieldset>
+    <div className="grid gap-4 border-t border-border pt-5"><div><h2 className="text-base font-semibold">2. Configure Repository</h2><p className="mt-1 text-sm text-muted-foreground">Only the selected source details are sent to the server.</p></div><label className="grid gap-2 text-sm"><span>{sourceType === "github" ? "Repository URL" : sourceType === "local" ? "Repository path" : "Example name"}</span><input value={source} onChange={(event) => setSource(event.target.value)} maxLength={1024} disabled={busy} placeholder={sourceType === "github" ? "https://github.com/owner/repository" : sourceType === "local" ? "/configured/repository" : "example"} className={`min-h-11 rounded-md border bg-background px-3 outline-none focus:border-primary focus-visible:ring-2 focus-visible:ring-ring ${sourceError && source ? "border-danger" : "border-border"}`} />{sourceError && source && <span className="text-xs text-danger">{sourceError}</span>}</label><label className="grid gap-2 text-sm"><span>Repository name</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} disabled={busy} className="min-h-11 rounded-md border border-border bg-background px-3 outline-none focus:border-primary focus-visible:ring-2 focus-visible:ring-ring" /></label></div>
+    {result && <div role="status" className="grid gap-2 rounded-lg border border-border bg-surface-alt p-4"><div className="flex flex-wrap items-center gap-2"><Badge variant={result.outcome === "completed" ? "default" : result.outcome === "failed" ? "destructive" : "secondary"}>{result.outcome}</Badge><span className="text-sm">{result.message ?? `Repository preparation ${result.outcome}.`}</span></div>{result.limitations?.map((item) => <p key={item} className="text-xs text-muted-foreground">{item}</p>)}</div>}
+    {error && <div role="alert" className="flex items-start gap-2 rounded-lg border border-danger/50 bg-danger/10 p-3 text-sm text-danger"><AlertCircle className="mt-0.5 size-4 shrink-0" />{error}</div>}
+    <div className="flex justify-end border-t border-border pt-4"><button type="submit" disabled={busy || Boolean(sourceError) || !name.trim()} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50">{busy ? <><LoaderCircle className="size-4 animate-spin" />Analyzing Repository</> : "Start Analysis →"}</button></div>
   </form>;
 }
+function Stepper({ active }: { active: number }) { return <ol aria-label="Repository setup progress" className="grid grid-cols-4 gap-2 rounded-lg border border-border bg-background/40 p-2">{["Type", "Configure", "Analyze", "Complete"].map((label, index) => <li key={label} className="flex min-w-0 items-center gap-2 px-1 py-1 text-xs"><span className={`grid size-7 shrink-0 place-items-center rounded-full ${active > index + 1 ? "bg-success text-background" : active === index + 1 ? "bg-primary text-primary-foreground" : "bg-surface-alt text-muted-foreground"}`}>{active > index + 1 ? <Check className="size-3.5" /> : index + 1}</span><span className="truncate">{label}</span></li>)}</ol>; }

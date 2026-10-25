@@ -13,6 +13,7 @@ export function validateCanonicalResult(value: unknown): asserts value is {
   const freshness = ["current", "stale", "unknown"];
   const get = (record: Record<string, unknown>, camel: string, snake: string) => record[camel] ?? record[snake];
   if (!outcomes.includes(String(result.outcome)) || !("data" in result)) throw new Error("Canonical result requires a supported outcome and data");
+  if (Buffer.byteLength(JSON.stringify(result.data), "utf8") > 192 * 1024) throw new Error("Canonical result data exceeds its serialized byte limit");
   if (result.completeness !== undefined && !completeness.includes(String(result.completeness))) throw new Error("Canonical result completeness is invalid");
   if (result.freshness !== undefined && !freshness.includes(String(result.freshness))) throw new Error("Canonical result freshness is invalid");
   const context = get(result, "context", "context");
@@ -58,6 +59,7 @@ export function validateCanonicalResult(value: unknown): asserts value is {
     throw new Error("Canonical limitation is invalid");
   }
   if (result.completeness === "truncated" && result.outcome !== "partial") throw new Error("Truncated canonical results must be partial");
+  if (result.outcome === "partial" && result.completeness === undefined) throw new Error("Partial canonical results must declare completeness");
   if (result.completeness && result.completeness !== "complete" && result.outcome === "success") {
     throw new Error("Incomplete canonical results cannot use success outcome");
   }
