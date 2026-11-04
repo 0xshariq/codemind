@@ -69,39 +69,3 @@ pub fn assess(factors: RiskFactors) -> RiskAssessment {
         unknown_factors: unknown,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::assess;
-    use crate::engines::chie::model::EvidenceAvailability;
-    use crate::engines::chie::model::RiskLevel;
-    use crate::engines::chie::risk::factors::*;
-
-    #[test]
-    fn missing_evidence_never_implies_low_risk_for_exposed_changes() {
-        let factors = RiskFactors {
-            structural: StructuralExposure {
-                impacted_entities: 1,
-                maximum_depth: 1,
-                state: FactorState::Supported,
-            },
-            validation: ValidationEvidence {
-                test_candidates: 0,
-                graph_evidence: EvidenceAvailability::Unknown,
-            },
-            historical: HistoricalInstability {
-                available: false,
-                elevated: false,
-            },
-            criticality: CriticalityPolicy {
-                known: false,
-                critical: false,
-            },
-            change: ChangeCharacteristics {
-                selection_is_symbol: true,
-                dependency_edges: 1,
-            },
-        };
-        assert_eq!(assess(factors).level, RiskLevel::Medium);
-    }
-}

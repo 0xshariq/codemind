@@ -11,6 +11,11 @@ use thiserror::Error;
 /// An immutable-by-convention capture of source bytes and the metadata used to
 /// identify them. Consumers must use `file_bytes`/`file_text`, not reread
 /// `root`, so the graph is derived from the same bytes represented by the ID.
+///
+/// `root` is provenance only. For an engine-owned temporary Git clone, that
+/// path is expected to stop existing after graph persistence/verification and
+/// cleanup; a valid snapshot remains usable because all accepted source bytes
+/// are pinned in `files` and validated against `manifest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceSnapshot {
     /// Canonical local root retained for provenance/debugging only. It is not
@@ -107,70 +112,5 @@ impl SourceSnapshot {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RepositoryContext, SnapshotValidationError, SourceSnapshot};
-    use crate::source::{
-        FileEntry, Language, SourceManifest,
-        identity::{digest_bytes, graph_version_for_snapshot},
-    };
-    use std::{collections::BTreeMap, path::PathBuf};
-
-    fn snapshot() -> SourceSnapshot {
-        let bytes = b"fn main() {}".to_vec();
-        let mut manifest = SourceManifest {
-            repository_id: "repo-1".into(),
-            source_snapshot_id: String::new(),
-            files: vec![FileEntry {
-                path: "src/main.rs".into(),
-                language: Some(Language::Rust),
-                bytes: bytes.len() as u64,
-                digest: digest_bytes(&bytes),
-            }],
-            omitted_files: Vec::new(),
-        };
-        manifest.source_snapshot_id = manifest.recomputed_snapshot_id();
-        let context = RepositoryContext {
-            repository_id: manifest.repository_id.clone(),
-            workspace_id: "workspace-1".into(),
-            source_snapshot_id: manifest.source_snapshot_id.clone(),
-            graph_version: graph_version_for_snapshot(&manifest.source_snapshot_id),
-        };
-        SourceSnapshot {
-            root: PathBuf::from("/not-needed-after-capture"),
-            context,
-            manifest,
-            files: BTreeMap::from([("src/main.rs".into(), bytes)]),
-        }
-    }
-
-    #[test]
-    fn validates_snapshot_context_manifest_and_pinned_bytes() {
-        assert!(snapshot().validate().is_ok());
-        assert_eq!(snapshot().file_text("src/main.rs").unwrap(), "fn main() {}");
-    }
-
-    #[test]
-    fn rejects_mutated_captured_bytes() {
-        let mut value = snapshot();
-        value
-            .files
-            .insert("src/main.rs".into(), b"fn test() {}".to_vec());
-        assert!(matches!(
-            value.validate(),
-            Err(SnapshotValidationError::ContentMismatch(_))
-        ));
-    }
-
-    #[test]
-    fn rejects_noncanonical_path_lookup() {
-        let value = snapshot();
-        assert_eq!(
-            value.file_bytes("src/../main.rs").unwrap_err().kind(),
-            std::io::ErrorKind::InvalidInput
-        );
     }
 }

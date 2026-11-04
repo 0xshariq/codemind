@@ -73,6 +73,7 @@ fn multi_hop_relationships_produce_direct_indirect_impact_and_tests() {
         line: 1,
         framework: "rust".to_owned(),
         status: TestStatus::Supported,
+        kind: Default::default(),
         context: context.clone(),
     }];
 
@@ -91,6 +92,7 @@ fn multi_hop_relationships_produce_direct_indirect_impact_and_tests() {
             provenance: "test".to_owned(),
         }),
         resolution: codemind_engine::engines::tie::model::TestResolution::Resolved,
+        target_kind: Default::default(),
         context,
     }];
 

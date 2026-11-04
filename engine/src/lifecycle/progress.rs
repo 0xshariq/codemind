@@ -45,25 +45,3 @@ pub fn investigation_stages(operation: &Operation) -> Vec<Progress> {
     let _ = operation;
     Vec::new()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Progress, investigation_stages};
-    use crate::lifecycle::operation::Operation;
-    use crate::source::RepositoryContext;
-
-    #[test]
-    fn progress_is_derived_from_real_operation_events() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let mut operation = Operation::new("op", "request", "trace", context).unwrap();
-        let event = operation.begin_stage("coie").unwrap();
-        let progress = Progress::from_event(&event);
-        assert_eq!(progress.operation_id, "op");
-        assert!(investigation_stages(&operation).is_empty());
-    }
-}

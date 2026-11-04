@@ -1,4 +1,7 @@
-use super::{context::RepositoryContext, error::ContractError, events::EventMetadata};
+use super::context::RepositoryContext;
+use super::error::ContractError;
+use super::events::EventMetadata;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +79,7 @@ impl OperationRecord {
             created_at: now,
             updated_at: now,
         };
+
         record.validate()?;
         Ok(record)
     }
@@ -89,18 +93,22 @@ impl OperationRecord {
             if value.trim().is_empty() {
                 return Err(ContractError::InvalidInput(format!("{field} is required")));
             }
+
             if value.chars().any(char::is_control) || value.len() > 4_096 {
                 return Err(ContractError::InvalidInput(format!(
                     "{field} is malformed or too long"
                 )));
             }
         }
+
         self.context.validate()?;
+
         if self.updated_at < self.created_at {
             return Err(ContractError::InvalidInput(
                 "operation updated_at precedes created_at".to_owned(),
             ));
         }
+
         if self
             .current_stage
             .as_deref()
@@ -110,6 +118,7 @@ impl OperationRecord {
                 "operation current_stage is empty or too long".to_owned(),
             ));
         }
+
         if self
             .result_reference
             .as_deref()
@@ -119,6 +128,7 @@ impl OperationRecord {
                 "operation result_reference cannot be empty when supplied".to_owned(),
             ));
         }
+
         if self
             .error_code
             .as_deref()
@@ -128,16 +138,19 @@ impl OperationRecord {
                 "operation error_code is empty or too long".to_owned(),
             ));
         }
+
         if self.state == OperationState::Completed && self.result_reference.is_none() {
             return Err(ContractError::InvalidInput(
                 "completed operation requires a persisted result reference".to_owned(),
             ));
         }
+
         if self.state == OperationState::Failed && self.error_code.is_none() {
             return Err(ContractError::InvalidInput(
                 "failed operation requires a safe error code".to_owned(),
             ));
         }
+
         Ok(())
     }
 
@@ -147,6 +160,7 @@ impl OperationRecord {
         if current == next {
             return true;
         }
+
         matches!(
             (current, next),
             (OperationState::Pending, OperationState::Running)
@@ -178,6 +192,7 @@ impl OperationRecord {
                 self.state, next
             )));
         }
+
         // Validate transition-dependent invariants before mutating the record,
         // so a rejected transition cannot leave an invalid in-memory state.
         if next == OperationState::Completed && self.result_reference.is_none() {
@@ -185,21 +200,27 @@ impl OperationRecord {
                 "completed operation requires a persisted result reference".to_owned(),
             ));
         }
+
         if next == OperationState::Failed && self.error_code.is_none() {
             return Err(ContractError::InvalidInput(
                 "failed operation requires a safe error code".to_owned(),
             ));
         }
+
         let mut candidate = self.clone();
+
         if candidate.state != next {
             candidate.state = next;
+
             // Persisted event time is monotonic even if the host clock moves back.
             if now > candidate.updated_at {
                 candidate.updated_at = now;
             }
         }
+
         candidate.validate()?;
         *self = candidate;
+
         Ok(())
     }
 }
@@ -216,11 +237,13 @@ pub struct OperationEvent {
 impl OperationEvent {
     pub fn validate(&self) -> Result<(), ContractError> {
         self.metadata.validate()?;
+
         if self.stage_state.is_some() && self.stage.as_deref().is_none_or(str::is_empty) {
             return Err(ContractError::InvalidInput(
                 "stage_state requires a non-empty stage name".to_owned(),
             ));
         }
+
         if self
             .stage
             .as_deref()
@@ -230,6 +253,7 @@ impl OperationEvent {
                 "operation event stage is empty or too long".to_owned(),
             ));
         }
+
         if self
             .message
             .as_deref()
@@ -239,59 +263,58 @@ impl OperationEvent {
                 "operation event message exceeds the event size bound".to_owned(),
             ));
         }
+
         Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod level1_tests {
     use super::{OperationRecord, OperationState};
-    use crate::contract::context::RepositoryContext;
-    use chrono::{Duration, TimeZone, Utc};
 
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
+    #[test]
+    fn terminal_state_classification_matches_the_operation_contract() {
+        assert!(!OperationState::Pending.is_terminal());
+        assert!(!OperationState::Running.is_terminal());
+        assert!(!OperationState::Degraded.is_terminal());
+
+        assert!(OperationState::Completed.is_terminal());
+        assert!(OperationState::Failed.is_terminal());
+        assert!(OperationState::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn operation_transition_table_is_idempotent_and_rejects_terminal_reopening() {
+        use OperationState::*;
+
+        let states = [Pending, Running, Degraded, Completed, Failed, Cancelled];
+
+        for current in states {
+            assert!(OperationRecord::can_transition(current, current));
         }
-    }
 
-    #[test]
-    fn operation_transitions_are_ordered_and_terminal_state_cannot_reopen() {
-        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
-        let mut record = OperationRecord::new_at("op", "req", "trace", context(), now).unwrap();
-        assert!(
-            record
-                .transition_to_at(OperationState::Running, now + Duration::seconds(1))
-                .is_ok()
-        );
-        record.result_reference = Some("result-1".into());
-        assert!(
-            record
-                .transition_to_at(OperationState::Completed, now + Duration::seconds(2))
-                .is_ok()
-        );
-        assert!(
-            record
-                .transition_to_at(OperationState::Failed, now + Duration::seconds(3))
-                .is_err()
-        );
-        assert!(record.state.is_terminal());
-    }
+        for next in [Running, Failed, Cancelled] {
+            assert!(OperationRecord::can_transition(Pending, next));
+        }
 
-    #[test]
-    fn same_state_delivery_is_idempotent_and_does_not_rewind_time() {
-        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
-        let mut record = OperationRecord::new_at("op", "req", "trace", context(), now).unwrap();
-        record
-            .transition_to_at(OperationState::Running, now + Duration::seconds(1))
-            .unwrap();
-        let updated_at = record.updated_at;
-        record
-            .transition_to_at(OperationState::Running, now)
-            .unwrap();
-        assert_eq!(record.updated_at, updated_at);
+        for next in [Completed, Degraded, Failed, Cancelled] {
+            assert!(OperationRecord::can_transition(Running, next));
+        }
+
+        for next in [Running, Completed, Failed, Cancelled] {
+            assert!(OperationRecord::can_transition(Degraded, next));
+        }
+
+        for terminal in [Completed, Failed, Cancelled] {
+            for next in states {
+                if next != terminal {
+                    assert!(!OperationRecord::can_transition(terminal, next));
+                }
+            }
+        }
+
+        assert!(!OperationRecord::can_transition(Pending, Completed));
+        assert!(!OperationRecord::can_transition(Pending, Degraded));
+        assert!(!OperationRecord::can_transition(Completed, Running));
     }
 }

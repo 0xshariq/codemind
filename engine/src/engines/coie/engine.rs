@@ -30,12 +30,12 @@ impl CoieEngine {
             diagnostics: Vec::new(),
         };
 
-        let repository_id = entity_id(
-            &snapshot.context.source_snapshot_id,
+        let repository_id = stable_entity_id(
+            &snapshot.context.repository_id,
             &snapshot.context.repository_id,
             "repository",
         );
-        let snapshot_id = entity_id(
+        let snapshot_id = snapshot_entity_id(
             &snapshot.context.source_snapshot_id,
             &snapshot.context.source_snapshot_id,
             "repository-snapshot",
@@ -72,7 +72,7 @@ impl CoieEngine {
         graph.relationships.push(relationship(
             &repository_id,
             &snapshot_id,
-            RelationshipKind::Contains,
+            RelationshipKind::HasSnapshot,
             snapshot,
             None,
             ResolutionStatus::Resolved,
@@ -86,7 +86,7 @@ impl CoieEngine {
         let mut parsed_imports_by_path = Vec::new();
 
         for entry in &snapshot.manifest.files {
-            let file_id = entity_id(&snapshot.context.source_snapshot_id, &entry.path, "file");
+            let file_id = stable_entity_id(&snapshot.context.repository_id, &entry.path, "file");
             file_ids.insert(entry.path.clone(), file_id.clone());
             graph.entities.push(GraphEntity {
                 id: file_id.clone(),
@@ -475,7 +475,7 @@ impl CoieEngine {
                 continue;
             }
 
-            let id = entity_id(&snapshot.context.source_snapshot_id, &path, "directory");
+            let id = stable_entity_id(&snapshot.context.repository_id, &path, "directory");
 
             ids.insert(path.clone(), id.clone());
 
@@ -569,8 +569,8 @@ impl CoieEngine {
 fn symbol_id(snapshot: &SourceSnapshot, candidate: &extraction::Candidate) -> String {
     let scope = candidate.enclosing.as_deref().unwrap_or("<module>");
 
-    entity_id(
-        &snapshot.context.source_snapshot_id,
+    stable_entity_id(
+        &snapshot.context.repository_id,
         &format!(
             "{}:{}:{}:{}:{}:{}",
             candidate.path,
@@ -584,9 +584,16 @@ fn symbol_id(snapshot: &SourceSnapshot, candidate: &extraction::Candidate) -> St
     )
 }
 
-fn entity_id(snapshot: &str, value: &str, kind: &str) -> String {
+fn stable_entity_id(repository_id: &str, value: &str, kind: &str) -> String {
     format!(
-        "{kind}:{snapshot}:{}",
+        "{kind}:{repository_id}:{}",
+        crate::source::identity::digest_text(value)
+    )
+}
+
+fn snapshot_entity_id(snapshot_id: &str, value: &str, kind: &str) -> String {
+    format!(
+        "{kind}:{snapshot_id}:{}",
         crate::source::identity::digest_text(value)
     )
 }
@@ -906,122 +913,4 @@ fn python_module_path(current_path: &str, specifier: &str) -> PathBuf {
     }
 
     base
-}
-
-#[cfg(test)]
-mod tests {
-    use super::CoieEngine;
-    use crate::{
-        engines::coie::model::{EntityKind, RelationshipKind},
-        source::SourceProvider,
-    };
-    use std::fs;
-
-    #[test]
-    fn normalizes_relative_imports_and_builds_edges_independent_of_file_order() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("src")).unwrap();
-        std::fs::write(
-            root.path().join("src/a.ts"),
-            "import { helper } from './lib/../b';\nexport function caller() { helper(); }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.path().join("src/b.ts"),
-            "export function helper() {}\n",
-        )
-        .unwrap();
-
-        let snapshot = SourceProvider::default()
-            .resolve(root.path(), "coie-relative-import-test")
-            .unwrap();
-        let graph = CoieEngine.extract(&snapshot).unwrap();
-
-        assert!(graph.relationships.iter().any(|relationship| {
-            relationship.kind == RelationshipKind::Imports
-                && graph
-                    .entities
-                    .iter()
-                    .any(|entity| entity.id == relationship.from && entity.path == "src/a.ts")
-                && graph
-                    .entities
-                    .iter()
-                    .any(|entity| entity.id == relationship.to && entity.path == "src/b.ts")
-        }));
-        assert!(graph.relationships.iter().any(|relationship| {
-            relationship.kind == RelationshipKind::Calls
-                && graph.entities.iter().any(|entity| {
-                    entity.id == relationship.to
-                        && entity.path == "src/b.ts"
-                        && entity.name == "helper"
-                })
-        }));
-    }
-
-    #[test]
-    fn extracts_imports_and_cross_file_calls_without_guessing_unimported_symbols() {
-        let root = tempfile::tempdir().unwrap();
-
-        fs::create_dir(root.path().join("src")).unwrap();
-
-        fs::write(
-            root.path().join("src/a.rs"),
-            "use crate::b::helper;\nfn caller() { helper(); missing(); }\n",
-        )
-        .unwrap();
-
-        fs::write(
-            root.path().join("src/b.rs"),
-            "pub fn helper() {}\npub fn missing() {}\n",
-        )
-        .unwrap();
-
-        let snapshot = SourceProvider::default()
-            .resolve(root.path(), "coie-engine-test")
-            .unwrap();
-
-        let graph = CoieEngine.extract(&snapshot).unwrap();
-
-        let calls_helper = graph.relationships.iter().any(|relationship| {
-            if relationship.kind != RelationshipKind::Calls {
-                return false;
-            }
-
-            let Some(caller) = graph
-                .entities
-                .iter()
-                .find(|entity| entity.id == relationship.from)
-            else {
-                return false;
-            };
-
-            let Some(target) = graph
-                .entities
-                .iter()
-                .find(|entity| entity.id == relationship.to)
-            else {
-                return false;
-            };
-
-            caller.kind == EntityKind::Symbol
-                && caller.name == "caller"
-                && caller.path == "src/a.rs"
-                && target.kind == EntityKind::Symbol
-                && target.name == "helper"
-                && target.path == "src/b.rs"
-        });
-
-        assert!(
-            calls_helper,
-            "expected caller() in src/a.rs to call imported helper() in src/b.rs"
-        );
-
-        assert!(
-            graph
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "CALL_UNRESOLVED"),
-            "expected missing() to remain unresolved instead of being guessed"
-        );
-    }
 }

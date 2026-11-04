@@ -60,34 +60,3 @@ pub fn validate(analysis: &ChangeAnalysis) -> Result<(), String> {
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::validate;
-    use crate::engines::chie::model::ChangeAnalysis;
-    use crate::source::RepositoryContext;
-
-    #[test]
-    fn graph_builder_rejects_missing_selection() {
-        let analysis = ChangeAnalysis {
-            analysis_id: "analysis-test".into(),
-            context: RepositoryContext {
-                repository_id: "repo".into(),
-                workspace_id: "workspace".into(),
-                source_snapshot_id: "snapshot".into(),
-                graph_version: "graph".into(),
-            },
-            selected_entity_id: String::new(),
-            impact_paths: Vec::new(),
-            test_candidates: Vec::new(),
-            risk: crate::engines::chie::model::RiskLevel::Unknown,
-            risk_assessment: None,
-            impact: None,
-            evidence: Vec::new(),
-            evidence_records: Vec::new(),
-            limitations: Vec::new(),
-            truncated: false,
-        };
-        assert!(validate(&analysis).is_err());
-    }
-}

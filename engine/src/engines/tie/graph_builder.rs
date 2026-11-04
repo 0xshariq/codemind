@@ -1,4 +1,7 @@
-use super::model::{TestEntity, TestRelationship, TestRelationshipKind, TestResolution};
+use super::model::{
+    TestEntity, TestNodeKind, TestRelationship, TestRelationshipKind, TestResolution,
+    TestTargetKind,
+};
 use crate::engines::coie::model::{CodeGraph, EntityKind};
 
 pub fn validate(tests: &[TestEntity], relationships: &[TestRelationship]) -> Result<(), String> {
@@ -25,12 +28,12 @@ pub fn validate(tests: &[TestEntity], relationships: &[TestRelationship]) -> Res
             .context
             .validate()
             .map_err(|error| error.to_string())?;
-        if !ids.contains(relationship.test_id.as_str()) {
+        let Some(source) = tests.iter().find(|test| test.id == relationship.test_id) else {
             return Err(format!(
-                "TIE relationship references unknown test: {}",
+                "TIE relationship references unknown source node: {}",
                 relationship.test_id
             ));
-        }
+        };
         if relationship.id.trim().is_empty() || !relationship_ids.insert(relationship.id.as_str()) {
             return Err("TIE relationship ID is empty or duplicated".into());
         }
@@ -52,23 +55,94 @@ pub fn validate(tests: &[TestEntity], relationships: &[TestRelationship]) -> Res
                 relationship.id
             ));
         }
-        if relationship.kind == TestRelationshipKind::Targets
-            && relationship.resolution == TestResolution::Resolved
-            && relationship.entity_id.is_none()
-        {
+        let requires_resolved_target = !matches!(
+            relationship.kind,
+            TestRelationshipKind::Targets
+                | TestRelationshipKind::DeclaredBy
+                | TestRelationshipKind::SetupBy
+                | TestRelationshipKind::TeardownBy
+        ) || relationship.resolution == TestResolution::Resolved;
+        if requires_resolved_target && relationship.entity_id.is_none() {
             return Err(format!(
-                "resolved TARGETS relationship has no canonical target ID: {}",
+                "resolved TIE relationship has no target ID: {}",
                 relationship.id
             ));
         }
-        if relationship.kind == TestRelationshipKind::DeclaredBy
-            && relationship.resolution == TestResolution::Resolved
-            && relationship.entity_id.is_none()
-        {
-            return Err(format!(
-                "resolved DECLARED_BY relationship has no canonical declaring entity ID: {}",
-                relationship.id
-            ));
+        match relationship.kind {
+            TestRelationshipKind::Contains => {
+                if source.kind != TestNodeKind::TestSuite
+                    || relationship.target_kind != TestTargetKind::Test
+                {
+                    return Err(format!(
+                        "CONTAINS has invalid endpoint kinds: {}",
+                        relationship.id
+                    ));
+                }
+            }
+            TestRelationshipKind::UsesFixture => {
+                if !matches!(source.kind, TestNodeKind::Test | TestNodeKind::TestSuite)
+                    || relationship.target_kind != TestTargetKind::Test
+                {
+                    return Err(format!(
+                        "USES_FIXTURE has invalid endpoint kinds: {}",
+                        relationship.id
+                    ));
+                }
+            }
+            TestRelationshipKind::DependsOn => {
+                if source.kind != TestNodeKind::Fixture
+                    || relationship.target_kind != TestTargetKind::Test
+                {
+                    return Err(format!(
+                        "DEPENDS_ON has invalid endpoint kinds: {}",
+                        relationship.id
+                    ));
+                }
+            }
+            TestRelationshipKind::HasCase => {
+                if source.kind != TestNodeKind::Test
+                    || relationship.target_kind != TestTargetKind::Test
+                {
+                    return Err(format!(
+                        "HAS_CASE has invalid endpoint kinds: {}",
+                        relationship.id
+                    ));
+                }
+            }
+            TestRelationshipKind::DeclaredBy | TestRelationshipKind::Targets => {
+                if relationship.target_kind != TestTargetKind::Code {
+                    return Err(format!(
+                        "code relationship has non-code target: {}",
+                        relationship.id
+                    ));
+                }
+                if relationship.kind == TestRelationshipKind::Targets
+                    && source.kind != TestNodeKind::Test
+                {
+                    return Err(format!(
+                        "TARGETS source is not a Test node: {}",
+                        relationship.id
+                    ));
+                }
+                if relationship.kind == TestRelationshipKind::DeclaredBy
+                    && source.kind != TestNodeKind::Test
+                {
+                    return Err(format!(
+                        "DECLARED_BY source is not a Test node: {}",
+                        relationship.id
+                    ));
+                }
+            }
+            TestRelationshipKind::SetupBy | TestRelationshipKind::TeardownBy => {
+                if !matches!(source.kind, TestNodeKind::Test | TestNodeKind::TestSuite)
+                    || relationship.target_kind != TestTargetKind::Code
+                {
+                    return Err(format!(
+                        "hook relationship has invalid endpoint kinds: {}",
+                        relationship.id
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -82,8 +156,49 @@ pub fn validate_against_code_graph(
     validate(tests, relationships)?;
     for relationship in relationships {
         let Some(entity_id) = relationship.entity_id.as_deref() else {
-            continue;
+            if relationship.target_kind == TestTargetKind::Code {
+                continue;
+            }
+            return Err(format!(
+                "TIE relationship is missing a Test Graph target: {}",
+                relationship.id
+            ));
         };
+        if relationship.target_kind != TestTargetKind::Code {
+            let Some(target) = tests.iter().find(|test| test.id == entity_id) else {
+                return Err(format!(
+                    "TIE relationship references absent Test Graph entity: {entity_id}"
+                ));
+            };
+            if target.context != relationship.context {
+                return Err(format!(
+                    "TIE relationship crosses Test Graph context: {}",
+                    relationship.id
+                ));
+            }
+            match relationship.kind {
+                TestRelationshipKind::Contains => {
+                    if !matches!(
+                        target.kind,
+                        TestNodeKind::TestSuite | TestNodeKind::Test | TestNodeKind::TestCase
+                    ) {
+                        return Err(format!("CONTAINS target has invalid kind: {entity_id}"));
+                    }
+                }
+                TestRelationshipKind::UsesFixture | TestRelationshipKind::DependsOn => {
+                    if target.kind != TestNodeKind::Fixture {
+                        return Err(format!(
+                            "fixture relationship target is not a Fixture: {entity_id}"
+                        ));
+                    }
+                }
+                TestRelationshipKind::HasCase if target.kind != TestNodeKind::TestCase => {
+                    return Err(format!("HAS_CASE target is not a TestCase: {entity_id}"));
+                }
+                _ => {}
+            }
+            continue;
+        }
         let Some(entity) = code_graph
             .entities
             .iter()
@@ -100,71 +215,24 @@ pub fn validate_against_code_graph(
             ));
         }
         match relationship.kind {
-            TestRelationshipKind::DeclaredBy
-                if entity.kind != EntityKind::File && entity.kind != EntityKind::Symbol =>
+            TestRelationshipKind::DeclaredBy => {
+                if entity.kind != EntityKind::File && entity.kind != EntityKind::Symbol {
+                    return Err(format!(
+                        "DECLARED_BY target is not a file or symbol: {entity_id}"
+                    ));
+                }
+            }
+            TestRelationshipKind::Targets
+            | TestRelationshipKind::SetupBy
+            | TestRelationshipKind::TeardownBy
+                if entity.kind != EntityKind::Symbol =>
             {
                 return Err(format!(
-                    "DECLARED_BY target is not a file or symbol: {entity_id}"
+                    "code test relationship target is not a symbol: {entity_id}"
                 ));
-            }
-            TestRelationshipKind::Targets if entity.kind != EntityKind::Symbol => {
-                return Err(format!("TARGETS target is not a symbol: {entity_id}"));
             }
             _ => {}
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_against_code_graph;
-    use crate::engines::coie::model::{CodeGraph, EntityKind, GraphEntity, ResolutionStatus};
-    use crate::engines::tie::model::{TestEntity, TestStatus};
-    use crate::source::{Language, RepositoryContext};
-
-    #[test]
-    fn graph_builder_accepts_a_test_with_a_canonical_file_target() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let file = GraphEntity {
-            id: "file".into(),
-            kind: EntityKind::File,
-            name: "tests/lib.rs".into(),
-            path: "tests/lib.rs".into(),
-            line: 1,
-            context: context.clone(),
-            language: Some(Language::Rust),
-            native_kind: Some("file".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let test = TestEntity {
-            id: "test".into(),
-            name: "works".into(),
-            path: "tests/lib.rs".into(),
-            line: 1,
-            framework: "rust".into(),
-            status: TestStatus::Supported,
-            context: context.clone(),
-        };
-        assert!(
-            validate_against_code_graph(
-                &[test],
-                &[],
-                &CodeGraph {
-                    context,
-                    entities: vec![file],
-                    relationships: Vec::new(),
-                    diagnostics: Vec::new()
-                }
-            )
-            .is_ok()
-        );
-    }
 }

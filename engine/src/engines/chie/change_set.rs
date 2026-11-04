@@ -8,6 +8,20 @@ pub enum ChangeSelectionKind {
     File,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ChangeInputOrigin {
+    #[default]
+    SelectedEntity,
+    GitCommit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChangeProvenance {
+    pub base_commit: String,
+    pub target_commit: String,
+    pub changed_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeSet {
     pub id: String,
@@ -15,6 +29,10 @@ pub struct ChangeSet {
     pub selected_entity_id: String,
     pub selection_kind: ChangeSelectionKind,
     pub source: Option<SourceEvidence>,
+    #[serde(default)]
+    pub origin: ChangeInputOrigin,
+    #[serde(default)]
+    pub git_provenance: Option<GitChangeProvenance>,
     pub analysis_run_id: Option<String>,
 }
 
@@ -37,8 +55,39 @@ impl ChangeSet {
             selected_entity_id,
             selection_kind,
             source,
+            origin: ChangeInputOrigin::SelectedEntity,
+            git_provenance: None,
             analysis_run_id: None,
         })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.trim().is_empty() || self.selected_entity_id.trim().is_empty() {
+            return Err("change set identity is required".to_owned());
+        }
+        self.context.validate().map_err(|error| error.to_string())?;
+        match (&self.origin, &self.git_provenance) {
+            (ChangeInputOrigin::SelectedEntity, Some(_)) => {
+                Err("selected-entity change set cannot carry Git provenance".to_owned())
+            }
+            (ChangeInputOrigin::GitCommit, None) => {
+                Err("Git-origin change set requires commit provenance".to_owned())
+            }
+            (ChangeInputOrigin::GitCommit, Some(provenance)) => {
+                if provenance.base_commit.trim().is_empty()
+                    || provenance.target_commit.trim().is_empty()
+                    || provenance.changed_paths.is_empty()
+                    || provenance
+                        .changed_paths
+                        .iter()
+                        .any(|path| path.trim().is_empty())
+                {
+                    return Err("Git change provenance is incomplete".to_owned());
+                }
+                Ok(())
+            }
+            (ChangeInputOrigin::SelectedEntity, None) => Ok(()),
+        }
     }
 
     pub fn for_entity(
@@ -77,44 +126,5 @@ impl AnalysisRun {
             return Err("analysis run identity and lifecycle fields are required".to_owned());
         }
         self.context.validate().map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::source::RepositoryContext;
-
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        }
-    }
-
-    #[test]
-    fn change_selection_accepts_only_symbol_and_file_entities() {
-        assert!(
-            ChangeSet::for_entity("set", context(), "symbol", EntityKind::Symbol, None).is_ok()
-        );
-        assert!(ChangeSet::for_entity("set", context(), "file", EntityKind::File, None).is_ok());
-        assert!(
-            ChangeSet::for_entity("set", context(), "directory", EntityKind::Directory, None)
-                .is_err()
-        );
-        assert!(
-            AnalysisRun {
-                id: "run".into(),
-                change_set_id: "set".into(),
-                context: context(),
-                status: "completed".into(),
-                started_at: "now".into(),
-                completed_at: None
-            }
-            .validate()
-            .is_ok()
-        );
     }
 }

@@ -1,7 +1,10 @@
 use crate::engines::coie::model::RelationshipKind;
+use crate::engines::history::model::HistoryRelationshipKind;
+use crate::engines::tie::model::TestRelationshipKind;
 
 pub fn code_relationship_label(kind: &RelationshipKind) -> &'static str {
     match kind {
+        RelationshipKind::HasSnapshot => "HAS_SNAPSHOT",
         RelationshipKind::Contains => "CONTAINS",
         RelationshipKind::Defines => "DEFINES",
         RelationshipKind::Imports => "IMPORTS",
@@ -9,25 +12,25 @@ pub fn code_relationship_label(kind: &RelationshipKind) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::code_relationship_label;
-    use crate::engines::coie::model::RelationshipKind;
+pub fn test_relationship_label(kind: &TestRelationshipKind) -> &'static str {
+    match kind {
+        TestRelationshipKind::Contains => "CONTAINS",
+        TestRelationshipKind::UsesFixture => "USES_FIXTURE",
+        TestRelationshipKind::DependsOn => "DEPENDS_ON",
+        TestRelationshipKind::DeclaredBy => "DECLARED_BY",
+        TestRelationshipKind::Targets => "TARGETS",
+        TestRelationshipKind::HasCase => "HAS_CASE",
+        TestRelationshipKind::SetupBy => "SETUP_BY",
+        TestRelationshipKind::TeardownBy => "TEARDOWN_BY",
+    }
+}
 
-    #[test]
-    fn maps_every_canonical_code_relationship_to_its_graph_label() {
-        assert_eq!(
-            code_relationship_label(&RelationshipKind::Contains),
-            "CONTAINS"
-        );
-        assert_eq!(
-            code_relationship_label(&RelationshipKind::Defines),
-            "DEFINES"
-        );
-        assert_eq!(
-            code_relationship_label(&RelationshipKind::Imports),
-            "IMPORTS"
-        );
-        assert_eq!(code_relationship_label(&RelationshipKind::Calls), "CALLS");
+pub fn history_relationship_label(kind: &HistoryRelationshipKind) -> &'static str {
+    match kind {
+        HistoryRelationshipKind::ContainsCommit => "CONTAINS_COMMIT",
+        HistoryRelationshipKind::ParentCommit => "PARENT_COMMIT",
+        HistoryRelationshipKind::RecordsChange => "RECORDS_CHANGE",
+        HistoryRelationshipKind::ChangesPath => "CHANGES_PATH",
+        HistoryRelationshipKind::ContainsPath => "CONTAINS_PATH",
     }
 }

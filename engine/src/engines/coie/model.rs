@@ -14,6 +14,7 @@ pub enum EntityKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RelationshipKind {
+    HasSnapshot,
     Contains,
     Defines,
     Imports,

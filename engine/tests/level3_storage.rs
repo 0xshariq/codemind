@@ -138,6 +138,7 @@ async fn empty_test_graph_is_a_valid_snapshot_and_clears_previous_tests() {
         line: 1,
         framework: "rust".into(),
         status: codemind_engine::engines::tie::model::TestStatus::Supported,
+        kind: Default::default(),
         context: context.clone(),
     };
     let relationship = codemind_engine::engines::tie::model::TestRelationship {
@@ -149,6 +150,7 @@ async fn empty_test_graph_is_a_valid_snapshot_and_clears_previous_tests() {
         evidence_path: "tests/target.rs".into(),
         evidence: None,
         resolution: codemind_engine::engines::tie::model::TestResolution::Resolved,
+        target_kind: Default::default(),
         context: context.clone(),
     };
     storage

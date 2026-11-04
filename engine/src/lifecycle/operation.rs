@@ -163,30 +163,3 @@ impl OperationEvent {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Operation;
-    use crate::contract::operation::OperationState;
-    use crate::source::RepositoryContext;
-
-    #[test]
-    fn completed_event_requires_a_result_and_advances_sequence() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let mut operation = Operation::new("op", "request", "trace", context).unwrap();
-        operation.begin_stage("coie").unwrap();
-        assert!(operation.completed_event().is_err());
-        operation.record.result_reference = Some("result".into());
-        operation.transition(OperationState::Completed).unwrap();
-        let event = operation.completed_event().unwrap();
-        assert_eq!(
-            event.metadata().sequence,
-            operation.record.latest_event_sequence
-        );
-    }
-}

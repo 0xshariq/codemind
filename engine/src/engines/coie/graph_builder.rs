@@ -66,6 +66,28 @@ pub fn validate_detailed(graph: &CodeGraph) -> Result<(), Vec<String>> {
             ));
         }
     }
+    let repository_ids: Vec<_> = graph
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Repository)
+        .map(|entity| entity.id.as_str())
+        .collect();
+    let snapshot_ids: Vec<_> = graph
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::RepositorySnapshot)
+        .map(|entity| entity.id.as_str())
+        .collect();
+    if let (Some(repository_id), Some(snapshot_id)) = (repository_ids.first(), snapshot_ids.first())
+        && !graph.relationships.iter().any(|relationship| {
+            relationship.kind == RelationshipKind::HasSnapshot
+                && relationship.from == *repository_id
+                && relationship.to == *snapshot_id
+        })
+    {
+        errors.push("repository snapshot is missing its HAS_SNAPSHOT relationship".to_owned());
+    }
+
     let mut relationship_ids = HashSet::new();
     for relationship in &graph.relationships {
         if relationship.id.trim().is_empty() || !relationship_ids.insert(relationship.id.clone()) {
@@ -129,16 +151,29 @@ pub fn validate_detailed(graph: &CodeGraph) -> Result<(), Vec<String>> {
 
 fn legal_relationship(kind: &RelationshipKind, from: &EntityKind, to: &EntityKind) -> bool {
     match kind {
-        RelationshipKind::Contains => matches!(
+        RelationshipKind::HasSnapshot => matches!(
             (from, to),
             (EntityKind::Repository, EntityKind::RepositorySnapshot)
-                | (EntityKind::RepositorySnapshot, EntityKind::Directory)
-                | (EntityKind::RepositorySnapshot, EntityKind::File)
-                | (EntityKind::Directory, EntityKind::Directory)
-                | (EntityKind::Directory, EntityKind::File)
-                | (EntityKind::Package, EntityKind::Module)
-                | (EntityKind::Module, EntityKind::Symbol)
         ),
+        RelationshipKind::Contains => matches!((from, to), |(
+            EntityKind::RepositorySnapshot,
+            EntityKind::Directory,
+        )| (
+            EntityKind::RepositorySnapshot,
+            EntityKind::File
+        ) | (
+            EntityKind::Directory,
+            EntityKind::Directory
+        ) | (
+            EntityKind::Directory,
+            EntityKind::File
+        ) | (
+            EntityKind::Package,
+            EntityKind::Module
+        ) | (
+            EntityKind::Module,
+            EntityKind::Symbol
+        )),
         RelationshipKind::Defines => matches!(
             (from, to),
             (EntityKind::File, EntityKind::Symbol)
@@ -152,56 +187,5 @@ fn legal_relationship(kind: &RelationshipKind, from: &EntityKind, to: &EntityKin
                 | (EntityKind::Module, EntityKind::Module)
         ),
         RelationshipKind::Calls => matches!((from, to), (EntityKind::Symbol, EntityKind::Symbol)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate;
-    use crate::engines::coie::model::{CodeGraph, EntityKind, GraphEntity, ResolutionStatus};
-    use crate::source::RepositoryContext;
-
-    #[test]
-    fn graph_validation_rejects_context_mismatch_and_accepts_repository_snapshot_nodes() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let graph = CodeGraph {
-            context: context.clone(),
-            entities: vec![
-                GraphEntity {
-                    id: "repo".into(),
-                    kind: EntityKind::Repository,
-                    name: "repo".into(),
-                    path: "repo".into(),
-                    line: 1,
-                    context: context.clone(),
-                    language: None,
-                    native_kind: Some("repository".into()),
-                    range: None,
-                    resolution: ResolutionStatus::Resolved,
-                    evidence: None,
-                },
-                GraphEntity {
-                    id: "snapshot".into(),
-                    kind: EntityKind::RepositorySnapshot,
-                    name: "snapshot".into(),
-                    path: "snapshot".into(),
-                    line: 1,
-                    context: context.clone(),
-                    language: None,
-                    native_kind: Some("repository_snapshot".into()),
-                    range: None,
-                    resolution: ResolutionStatus::Resolved,
-                    evidence: None,
-                },
-            ],
-            relationships: Vec::new(),
-            diagnostics: Vec::new(),
-        };
-        assert!(validate(&graph));
     }
 }

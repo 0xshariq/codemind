@@ -1,12 +1,10 @@
-use super::{TestDeclaration, node_text, parse_tree, range_of};
-use crate::source::tree_sitter::SourceRange;
+use super::{TestCaseDeclaration, TestDeclaration, node_text, parse_tree, range_of};
+use crate::engines::tie::model::{TestNodeKind, TestStatus};
 
 pub fn discover(source: &str) -> std::io::Result<Vec<TestDeclaration>> {
     let tree = parse_tree(crate::source::Language::Rust, source)?;
     let mut declarations = Vec::new();
-
     collect(tree.root_node(), source.as_bytes(), &mut declarations);
-
     Ok(declarations)
 }
 
@@ -20,13 +18,16 @@ fn collect(node: tree_sitter::Node<'_>, source: &[u8], output: &mut Vec<TestDecl
         output.push(TestDeclaration {
             name,
             framework: "rust".into(),
-            status: super::TestStatus::Supported,
+            status: TestStatus::Supported,
+            kind: TestNodeKind::Test,
             range: range_of(node),
+            parent_start_byte: None,
+            fixture_names: Vec::new(),
+            cases: rstest_cases(node, source),
         });
     }
 
     let mut cursor = node.walk();
-
     for child in node.named_children(&mut cursor) {
         collect(child, source, output);
     }
@@ -38,9 +39,7 @@ fn has_test_attribute(function: tree_sitter::Node<'_>, source: &[u8]) -> bool {
     };
 
     let mut cursor = parent.walk();
-
     let siblings: Vec<_> = parent.named_children(&mut cursor).collect();
-
     let Some(index) = siblings.iter().position(|node| node.id() == function.id()) else {
         return false;
     };
@@ -55,38 +54,60 @@ fn has_test_attribute(function: tree_sitter::Node<'_>, source: &[u8]) -> bool {
                     .chars()
                     .filter(|character| !character.is_whitespace())
                     .collect();
-
                 normalized == "#[test]"
                     || normalized.starts_with("#[tokio::test]")
                     || normalized.starts_with("#[tokio::test(")
                     || normalized.starts_with("#[async_std::test]")
                     || normalized.starts_with("#[async_std::test(")
+                    || normalized == "#[rstest]"
+                    || normalized.starts_with("#[rstest(")
             })
         })
 }
 
-#[allow(dead_code)]
-fn _range(_range: SourceRange) {}
+fn rstest_cases(function: tree_sitter::Node<'_>, source: &[u8]) -> Vec<TestCaseDeclaration> {
+    let Some(parent) = function.parent() else {
+        return Vec::new();
+    };
+    let mut cursor = parent.walk();
+    let siblings: Vec<_> = parent.named_children(&mut cursor).collect();
+    let Some(index) = siblings.iter().position(|node| node.id() == function.id()) else {
+        return Vec::new();
+    };
+
+    let mut ranges = Vec::new();
+    for attribute in siblings[..index]
+        .iter()
+        .rev()
+        .take_while(|node| node.kind() == "attribute_item")
+    {
+        let Some(text) = node_text(*attribute, source) else {
+            continue;
+        };
+        let normalized = text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        if !(normalized.starts_with("#[case(") || normalized.starts_with("#[case::"))
+            || !normalized.ends_with(")]")
+        {
+            continue;
+        }
+        ranges.push(range_of(*attribute));
+    }
+    ranges.reverse();
+    ranges
+        .into_iter()
+        .enumerate()
+        .map(|(index, range)| TestCaseDeclaration {
+            name: format!("case-{}", index + 1),
+            range,
+        })
+        .collect()
+}
 
 pub fn is_test_declaration(source: &str) -> bool {
     discover(source)
-        .map(|items| !items.is_empty())
+        .map(|items| items.iter().any(|item| item.kind == TestNodeKind::Test))
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::discover;
-
-    #[test]
-    fn discovers_supported_rust_test_attributes_without_comment_false_positives() {
-        let source = "// #[test]\n#[tokio::test]\nasync fn works() { helper(); }\n";
-
-        let tests = discover(source).unwrap();
-
-        assert_ne!(tests.len(), 2);
-        assert_eq!(tests[0].name, "works");
-        assert_eq!(tests[0].framework, "rust");
-        assert_eq!(tests[0].range.start_line, 3);
-    }
 }

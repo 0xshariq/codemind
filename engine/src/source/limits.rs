@@ -125,7 +125,16 @@ mod tests {
     #[test]
     fn ignores_only_named_path_components() {
         assert!(is_ignored(Path::new("project/node_modules/a.js")));
+        assert!(is_ignored(Path::new(".git")));
         assert!(is_ignored(Path::new(".git/config")));
+        assert!(is_ignored(Path::new(
+            "nested/repository/.git/objects/pack/data"
+        )));
+        // Worktrees/submodules may use a `.git` file rather than a directory;
+        // path-component filtering still excludes that metadata entry.
+        assert!(is_ignored(Path::new("nested/repository/.git")));
+        assert!(!is_ignored(Path::new(".github/workflows/ci.yml")));
+        assert!(!is_ignored(Path::new("src/.git-notes")));
         assert!(!is_ignored(Path::new("src/targeting.rs")));
         assert!(!is_ignored(Path::new("src/build_graph.rs")));
     }

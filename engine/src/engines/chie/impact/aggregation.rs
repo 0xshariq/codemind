@@ -25,22 +25,3 @@ pub fn deduplicate(paths: Vec<ImpactPath>) -> Vec<ImpactPath> {
 
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::deduplicate;
-    use crate::engines::chie::model::{ImpactClassification, ImpactPath};
-
-    #[test]
-    fn deduplicate_keeps_distinct_paths_but_removes_exact_duplicates() {
-        let empty = ImpactPath {
-            entity_id: "b".into(),
-            depth: 1,
-            classification: ImpactClassification::Direct,
-            relationships: Vec::new(),
-        };
-        // Empty paths are not valid Change Graph paths, but the aggregation helper itself should still be deterministic.
-        let result = deduplicate(vec![empty.clone(), empty]);
-        assert_eq!(result.len(), 1);
-    }
-}

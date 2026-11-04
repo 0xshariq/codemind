@@ -88,7 +88,9 @@ impl SourceManifest {
             if !is_sha256_hex(&file.digest) {
                 return Err(SourceManifestError::InvalidDigest(file.path.clone()));
             }
-            if Language::from_path(Path::new(&file.path)) != file.language {
+            if let Some(language) = file.language
+                && Language::from_path(Path::new(&file.path)) != Some(language)
+            {
                 return Err(SourceManifestError::LanguageMismatch(file.path.clone()));
             }
             total_captured_bytes = total_captured_bytes.saturating_add(file.bytes);
@@ -123,6 +125,11 @@ impl SourceManifest {
     /// source manifest. File content is represented by its SHA-256 digest;
     /// omitted file contents are not claimed to have been captured, but their
     /// path, known size and omission reason affect the snapshot identity.
+    ///
+    /// Repository ID, Git commit ID, checkout root, and graph projection version
+    /// are intentionally excluded: this ID fingerprints the accepted/omitted
+    /// source set. The repository ID and graph version remain separate fields in
+    /// the surrounding context.
     pub fn identity_material(&self) -> Vec<u8> {
         let mut material = b"codemind-source-manifest-v2\0".to_vec();
         let mut files: Vec<&FileEntry> = self.files.iter().collect();
@@ -171,8 +178,6 @@ fn is_sha256_hex(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{FileEntry, OmittedFile, SourceManifest, SourceManifestError};
-    use crate::source::Language;
-    use crate::source::identity::digest_text;
 
     fn manifest() -> SourceManifest {
         SourceManifest {
@@ -181,15 +186,17 @@ mod tests {
             files: vec![
                 FileEntry {
                     path: "src/lib.rs".into(),
-                    language: Some(Language::Rust),
+                    language: None,
                     bytes: 3,
-                    digest: digest_text("abc"),
+                    digest: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                        .into(),
                 },
                 FileEntry {
                     path: "src/mod.rs".into(),
-                    language: Some(Language::Rust),
+                    language: None,
                     bytes: 2,
-                    digest: digest_text("xy"),
+                    digest: "769a4e6d0003189c7e96c5d9b7e810a0d11c3a12832527ec94b0f86d277f51ca"
+                        .into(),
                 },
             ],
             omitted_files: vec![
@@ -224,6 +231,32 @@ mod tests {
             second.recomputed_snapshot_id()
         );
         assert!(first.validate().is_ok());
+    }
+
+    #[test]
+    fn snapshot_identity_depends_on_source_and_omissions_not_repository_identity() {
+        let mut first = manifest();
+        first.source_snapshot_id = first.recomputed_snapshot_id();
+        assert!(first.validate().is_ok());
+
+        let mut second = first.clone();
+        second.repository_id = "repo-2".into();
+        second.source_snapshot_id = second.recomputed_snapshot_id();
+
+        assert!(second.validate().is_ok());
+        assert_eq!(
+            first.recomputed_snapshot_id(),
+            second.recomputed_snapshot_id(),
+            "the same captured/omitted source set shares a snapshot ID across repositories"
+        );
+
+        second.omitted_files[0].reason = "omitted by a different configured limit".into();
+        second.source_snapshot_id = second.recomputed_snapshot_id();
+        assert_ne!(
+            first.source_snapshot_id, second.source_snapshot_id,
+            "omission semantics are part of the captured-input fingerprint"
+        );
+        assert!(second.validate().is_ok());
     }
 
     #[test]

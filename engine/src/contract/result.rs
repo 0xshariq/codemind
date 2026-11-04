@@ -242,65 +242,39 @@ pub fn serialized_size<T: Serialize>(value: &T) -> Result<usize, serde_json::Err
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        CanonicalResult, Completeness, Correlation, EvidenceReference, Freshness, Outcome,
-        bounded_relationships, serialized_size,
-    };
-    use crate::contract::context::RepositoryContext;
+mod level1_tests {
+    use super::{Correlation, serialized_size};
 
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
+    #[test]
+    fn correlation_requires_all_three_bounded_identifiers() {
+        let valid = Correlation {
+            request_id: "request-1".into(),
+            trace_id: "trace-1".into(),
+            operation_id: "operation-1".into(),
+        };
+        assert!(valid.validate().is_ok());
+
+        for invalid in [
+            Correlation {
+                request_id: " ".into(),
+                ..valid.clone()
+            },
+            Correlation {
+                trace_id: "trace\n1".into(),
+                ..valid.clone()
+            },
+            Correlation {
+                operation_id: "x".repeat(super::MAX_METADATA_ITEM_BYTES + 1),
+                ..valid.clone()
+            },
+        ] {
+            assert!(invalid.validate().is_err());
         }
     }
 
-    fn result(data: Vec<String>) -> CanonicalResult<Vec<String>> {
-        CanonicalResult::new(
-            context(),
-            Correlation {
-                request_id: "request".into(),
-                trace_id: "trace".into(),
-                operation_id: "operation".into(),
-            },
-            Outcome::Success,
-            Completeness::Complete,
-            Freshness::Current,
-            data,
-        )
-    }
-
     #[test]
-    fn validates_context_correlation_evidence_and_serialized_bound() {
-        let mut value = result(vec!["symbol".into()]);
-        value.evidence.push(EvidenceReference {
-            path: "src/lib.rs".into(),
-            line: 1,
-            snapshot_id: "snapshot".into(),
-        });
-        assert!(value.validate().is_ok());
-        assert!(serialized_size(&value).unwrap() > 0);
-
-        value.evidence[0].line = 0;
-        assert!(value.validate().is_err());
-    }
-
-    #[test]
-    fn truncation_is_reported_as_partial_not_complete_success() {
-        let value = bounded_relationships(result(vec!["a".into(), "b".into()]), 1);
-        assert_eq!(value.outcome, Outcome::Partial);
-        assert_eq!(value.completeness, Completeness::Truncated);
-        assert_eq!(value.data.len(), 1);
-        assert!(value.validate().is_ok());
-    }
-
-    #[test]
-    fn empty_success_becomes_empty_outcome() {
-        let value = bounded_relationships(result(Vec::<String>::new()), 5);
-        assert_eq!(value.outcome, Outcome::Empty);
-        assert_eq!(value.completeness, Completeness::Complete);
+    fn serialized_size_reports_the_encoded_json_byte_length() {
+        assert_eq!(serialized_size(&vec![1, 2, 3]).unwrap(), 7);
+        assert_eq!(serialized_size(&"abc").unwrap(), 5);
     }
 }

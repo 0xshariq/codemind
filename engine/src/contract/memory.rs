@@ -248,157 +248,35 @@ fn validate_evidence_reference(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{HandoffWriteRequest, MemoryReadRequest, MemoryScope, ReviewWriteRequest};
-    use crate::{
-        contract::context::RepositoryContext,
-        memory::model::{
-            ConversationSession, ConversationTurn, HandoffRecord, ReviewContextRecord,
-            ReviewEpisode, ReviewFinding,
-        },
-    };
-
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        }
-    }
+mod level1_tests {
+    use super::MemoryScope;
 
     #[test]
-    fn scope_parser_accepts_only_approved_scope_names() {
+    fn memory_scope_parser_accepts_only_the_three_declared_scopes() {
+        assert_eq!(MemoryScope::parse("user").unwrap(), MemoryScope::User);
+        assert_eq!(MemoryScope::parse("team").unwrap(), MemoryScope::Team);
         assert_eq!(
             MemoryScope::parse("repository").unwrap(),
             MemoryScope::Repository
         );
-        assert!(MemoryScope::parse("global").is_err());
+        for unsupported in ["", "global", "workspace", "User", " repository "] {
+            assert!(MemoryScope::parse(unsupported).is_err());
+        }
     }
 
     #[test]
-    fn handoff_and_review_envelopes_validate_nested_context_and_references() {
-        let context = context();
-        let handoff = HandoffRecord {
-            handoff_id: "handoff-1".into(),
-            schema_version: "1".into(),
-            operation_id: "operation-1".into(),
-            review_episode_id: "episode-1".into(),
-            source_stage: "chie".into(),
-            target_stage: "agent".into(),
-            task: "Continue investigating the selected symbol".into(),
-            findings: vec!["A dependent symbol was found".into()],
-            evidence_references: Vec::new(),
-            context: context.clone(),
-            open_questions: Vec::new(),
-            status: "pending".into(),
-            idempotency_key: "handoff-idempotency-1".into(),
-            version: 1,
-            created_at: "2026-10-16T00:00:00Z".into(),
-            updated_at: "2026-10-16T00:00:00Z".into(),
-        };
-        assert!(
-            HandoffWriteRequest {
-                context: context.clone(),
-                record: handoff.clone()
-            }
-            .validate()
-            .is_ok()
-        );
-        let mut mismatched_handoff = handoff;
-        mismatched_handoff.context.graph_version = "graph-other".into();
-        assert!(
-            HandoffWriteRequest {
-                context: context.clone(),
-                record: mismatched_handoff
-            }
-            .validate()
-            .is_err()
-        );
+    fn memory_scope_owner_validation_is_scope_sensitive_and_bounded() {
+        assert!(MemoryScope::User.validate_owner("user-1").is_ok());
+        assert!(MemoryScope::Team.validate_owner("team-1").is_ok());
+        assert!(MemoryScope::Repository.validate_owner("").is_ok());
 
-        let session = ConversationSession {
-            session_id: "session-1".into(),
-            scope: "repository".into(),
-            context: context.clone(),
-            started_at: "2026-10-16T00:00:00Z".into(),
-            ended_at: None,
-        };
-        let episode = ReviewEpisode {
-            episode_id: "episode-1".into(),
-            session_id: session.session_id.clone(),
-            title: "Selected-symbol investigation".into(),
-            context: context.clone(),
-            created_at: "2026-10-16T00:00:00Z".into(),
-        };
-        let review = ReviewContextRecord {
-            context_id: "review-1".into(),
-            scope: "repository".into(),
-            owner_id: "repository-owner".into(),
-            session: session.clone(),
-            turns: vec![ConversationTurn {
-                turn_id: "turn-1".into(),
-                session_id: session.session_id,
-                role: "user".into(),
-                summary: "Investigate the selected symbol".into(),
-                context: context.clone(),
-                created_at: "2026-10-16T00:00:01Z".into(),
-            }],
-            episode,
-            findings: vec![ReviewFinding {
-                finding_id: "finding-1".into(),
-                episode_id: "episode-1".into(),
-                summary: "One supported dependency path exists".into(),
-                evidence: Vec::new(),
-                context: context.clone(),
-                created_at: "2026-10-16T00:00:02Z".into(),
-            }],
-            context: context.clone(),
-            updated_at: "2026-10-16T00:00:03Z".into(),
-        };
+        assert!(MemoryScope::User.validate_owner("  ").is_err());
+        assert!(MemoryScope::Team.validate_owner("").is_err());
         assert!(
-            ReviewWriteRequest {
-                context: context.clone(),
-                record: review.clone()
-            }
-            .validate()
-            .is_ok()
+            MemoryScope::Repository
+                .validate_owner(&"x".repeat(513))
+                .is_err()
         );
-        let mut multi_turn_review = review.clone();
-        multi_turn_review.turns[0].summary = "x".repeat(20 * 1024);
-        assert!(
-            ReviewWriteRequest {
-                context: context.clone(),
-                record: multi_turn_review,
-            }
-            .validate()
-            .is_ok()
-        );
-        let mut broken_review = review;
-        broken_review.findings[0].episode_id = "episode-missing".into();
-        assert!(
-            ReviewWriteRequest {
-                context,
-                record: broken_review
-            }
-            .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn read_request_enforces_kind_owner_and_limit_contract() {
-        let request = MemoryReadRequest {
-            context: context(),
-            scope: "user".into(),
-            owner_id: "user-1".into(),
-            kind: "semantic".into(),
-            limit: 10,
-        };
-        assert!(request.validate().is_ok());
-        let invalid = MemoryReadRequest {
-            owner_id: String::new(),
-            ..request
-        };
-        assert!(invalid.validate().is_err());
+        assert!(MemoryScope::Repository.validate_owner("owner\nid").is_err());
     }
 }

@@ -1,4 +1,9 @@
-use super::model::{TestEntity, TestRelationship};
+use super::discovery::{declaration_id, discover_declarations, innermost_test_declaration};
+use super::model::{
+    TestEntity, TestNodeKind, TestRelationship, TestRelationshipKind, TestResolution, TestStatus,
+    TestTargetKind,
+};
+use crate::source::{SourceSnapshot, tree_sitter};
 
 /// Canonical in-memory TIE result used by discovery, validation and future
 /// pipeline integration. It is deliberately the same pair returned by
@@ -16,31 +21,231 @@ pub fn graph(tests: Vec<TestEntity>, relationships: Vec<TestRelationship>) -> Te
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::engines::tie::discovery::TieEngine;
-    use crate::source::SourceProvider;
-    use std::fs;
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TieEngine;
 
-    #[test]
-    fn discovery_associates_only_calls_inside_a_test_body() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join("lib.rs"),
-            "fn helper() {}\nhelper();\n#[test]\nfn works() { helper(); }\n",
-        )
-        .unwrap();
-        let snapshot = SourceProvider::default()
-            .resolve(root.path(), "tie-engine-test")
-            .unwrap();
-        let (_, relationships) = TieEngine.discover(&snapshot).unwrap();
-        let targets: Vec<_> = relationships
-            .iter()
-            .filter(|relationship| {
-                relationship.kind == crate::engines::tie::model::TestRelationshipKind::Targets
-            })
-            .collect();
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].target_symbol_name.as_deref(), Some("helper"));
+impl TieEngine {
+    pub fn discover(
+        &self,
+        snapshot: &SourceSnapshot,
+    ) -> std::io::Result<(Vec<TestEntity>, Vec<TestRelationship>)> {
+        let mut tests = Vec::new();
+        let mut relationships = Vec::new();
+
+        for file in &snapshot.manifest.files {
+            let Some(language) = file.language else {
+                continue;
+            };
+            let source = snapshot.file_text(&file.path)?;
+            let parsed = tree_sitter::parse(language, source);
+            let declarations = discover_declarations(language, source)?;
+            let mut ids_by_start = std::collections::HashMap::new();
+            let mut fixture_ids_by_name = std::collections::HashMap::new();
+
+            for declaration in &declarations {
+                let id = declaration_id(&snapshot.context.repository_id, &file.path, declaration);
+                ids_by_start.insert(declaration.range.start_byte, id.clone());
+                if declaration.kind == TestNodeKind::Fixture {
+                    fixture_ids_by_name.insert(declaration.name.clone(), id.clone());
+                }
+                tests.push(TestEntity {
+                    id: id.clone(),
+                    name: declaration.name.clone(),
+                    path: file.path.clone(),
+                    line: declaration.range.start_line,
+                    framework: declaration.framework.clone(),
+                    status: declaration.status,
+                    kind: declaration.kind,
+                    context: snapshot.context.clone(),
+                });
+            }
+
+            for declaration in &declarations {
+                let source_id = ids_by_start
+                    .get(&declaration.range.start_byte)
+                    .cloned()
+                    .expect("every TIE declaration receives an ID");
+
+                if declaration.kind == TestNodeKind::Test {
+                    relationships.push(TestRelationship {
+                        id: format!("declared-by:{source_id}"),
+                        kind: TestRelationshipKind::DeclaredBy,
+                        test_id: source_id.clone(),
+                        target_symbol_name: Some(declaration.name.clone()),
+                        entity_id: None,
+                        target_kind: TestTargetKind::Code,
+                        evidence_path: file.path.clone(),
+                        evidence: Some(crate::engines::coie::model::SourceEvidence {
+                            path: file.path.clone(),
+                            start_line: declaration.range.start_line,
+                            end_line: declaration.range.end_line,
+                            snapshot_id: snapshot.context.source_snapshot_id.clone(),
+                            provenance: "tree-sitter-test-declaration".into(),
+                        }),
+                        resolution: TestResolution::Unresolved,
+                        context: snapshot.context.clone(),
+                    });
+                }
+
+                if let Some(parent_start_byte) = declaration.parent_start_byte
+                    && let Some(parent_id) = ids_by_start.get(&parent_start_byte)
+                {
+                    relationships.push(TestRelationship {
+                        id: format!("contains:{parent_id}:{source_id}"),
+                        kind: TestRelationshipKind::Contains,
+                        test_id: parent_id.clone(),
+                        target_symbol_name: None,
+                        entity_id: Some(source_id.clone()),
+                        target_kind: TestTargetKind::Test,
+                        evidence_path: file.path.clone(),
+                        evidence: None,
+                        resolution: TestResolution::Resolved,
+                        context: snapshot.context.clone(),
+                    });
+                }
+
+                for case in &declaration.cases {
+                    let case_id = format!(
+                        "test-case:{}:{}:{}:{}",
+                        snapshot.context.repository_id,
+                        file.path,
+                        declaration.range.start_byte,
+                        case.range.start_byte
+                    );
+                    tests.push(TestEntity {
+                        id: case_id.clone(),
+                        name: case.name.clone(),
+                        path: file.path.clone(),
+                        line: case.range.start_line,
+                        framework: declaration.framework.clone(),
+                        status: TestStatus::Supported,
+                        kind: TestNodeKind::TestCase,
+                        context: snapshot.context.clone(),
+                    });
+                    relationships.push(TestRelationship {
+                        id: format!("has-case:{source_id}:{case_id}"),
+                        kind: TestRelationshipKind::HasCase,
+                        test_id: source_id.clone(),
+                        target_symbol_name: None,
+                        entity_id: Some(case_id),
+                        target_kind: TestTargetKind::Test,
+                        evidence_path: file.path.clone(),
+                        evidence: Some(crate::engines::coie::model::SourceEvidence {
+                            path: file.path.clone(),
+                            start_line: case.range.start_line,
+                            end_line: case.range.end_line,
+                            snapshot_id: snapshot.context.source_snapshot_id.clone(),
+                            provenance: "tree-sitter-parameterized-test-case".into(),
+                        }),
+                        resolution: TestResolution::Resolved,
+                        context: snapshot.context.clone(),
+                    });
+                }
+
+                for fixture_name in &declaration.fixture_names {
+                    if declaration.kind == TestNodeKind::Fixture {
+                        continue;
+                    }
+                    let Some(fixture_id) = fixture_ids_by_name.get(fixture_name) else {
+                        if let Some(test) = tests.iter_mut().find(|test| test.id == source_id) {
+                            test.status = TestStatus::Partial;
+                        }
+                        continue;
+                    };
+                    relationships.push(TestRelationship {
+                        id: format!("uses-fixture:{source_id}:{fixture_id}"),
+                        kind: TestRelationshipKind::UsesFixture,
+                        test_id: source_id.clone(),
+                        target_symbol_name: Some(fixture_name.clone()),
+                        entity_id: Some(fixture_id.clone()),
+                        target_kind: TestTargetKind::Test,
+                        evidence_path: file.path.clone(),
+                        evidence: Some(crate::engines::coie::model::SourceEvidence {
+                            path: file.path.clone(),
+                            start_line: declaration.range.start_line,
+                            end_line: declaration.range.end_line,
+                            snapshot_id: snapshot.context.source_snapshot_id.clone(),
+                            provenance: "python-fixture-parameter".into(),
+                        }),
+                        resolution: TestResolution::Resolved,
+                        context: snapshot.context.clone(),
+                    });
+                }
+
+                if declaration.kind == TestNodeKind::Fixture {
+                    for fixture_name in &declaration.fixture_names {
+                        let Some(target_id) = fixture_ids_by_name.get(fixture_name) else {
+                            continue;
+                        };
+                        if target_id == &source_id {
+                            continue;
+                        }
+                        relationships.push(TestRelationship {
+                            id: format!("depends-on:{source_id}:{target_id}"),
+                            kind: TestRelationshipKind::DependsOn,
+                            test_id: source_id.clone(),
+                            target_symbol_name: Some(fixture_name.clone()),
+                            entity_id: Some(target_id.clone()),
+                            target_kind: TestTargetKind::Test,
+                            evidence_path: file.path.clone(),
+                            evidence: Some(crate::engines::coie::model::SourceEvidence {
+                                path: file.path.clone(),
+                                start_line: declaration.range.start_line,
+                                end_line: declaration.range.end_line,
+                                snapshot_id: snapshot.context.source_snapshot_id.clone(),
+                                provenance: "python-fixture-dependency".into(),
+                            }),
+                            resolution: TestResolution::Resolved,
+                            context: snapshot.context.clone(),
+                        });
+                    }
+                }
+            }
+
+            for call in &parsed.call_site_details {
+                let Some(declaration) = innermost_test_declaration(&declarations, call.range)
+                else {
+                    continue;
+                };
+                if declaration.kind != TestNodeKind::Test {
+                    continue;
+                }
+                let short = call.callee.rsplit('.').next().unwrap_or(&call.callee);
+                if matches!(short, "test" | "it" | "describe")
+                    || call.callee.contains("test.each")
+                    || call.callee.contains("it.each")
+                {
+                    continue;
+                }
+                let test_id = ids_by_start
+                    .get(&declaration.range.start_byte)
+                    .cloned()
+                    .expect("test declaration has an ID");
+                let target_name = short.to_owned();
+                relationships.push(TestRelationship {
+                    id: format!(
+                        "targets:{test_id}:{target_name}:{}:{}",
+                        call.range.start_line, call.range.start_byte
+                    ),
+                    kind: TestRelationshipKind::Targets,
+                    test_id,
+                    target_symbol_name: Some(target_name),
+                    entity_id: None,
+                    target_kind: TestTargetKind::Code,
+                    evidence_path: file.path.clone(),
+                    evidence: Some(crate::engines::coie::model::SourceEvidence {
+                        path: file.path.clone(),
+                        start_line: call.range.start_line,
+                        end_line: call.range.end_line,
+                        snapshot_id: snapshot.context.source_snapshot_id.clone(),
+                        provenance: "tree-sitter-test-body-call".into(),
+                    }),
+                    resolution: TestResolution::Unresolved,
+                    context: snapshot.context.clone(),
+                });
+            }
+        }
+
+        Ok((tests, relationships))
     }
 }

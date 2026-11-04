@@ -15,6 +15,9 @@ pub fn validate_memory(record: &MemoryRecord) -> Result<(), String> {
         || record.payload_json.len() > MAX_PAYLOAD_BYTES
         || record.owner_id.len() > 512
         || (matches!(record.scope.as_str(), "user" | "team") && record.owner_id.trim().is_empty())
+        || (record.scope == "repository"
+            && !record.owner_id.is_empty()
+            && record.owner_id != record.context.repository_id)
         || record.evidence.len() > 100
     {
         return Err("memory record is invalid or exceeds the bounded schema".to_owned());
@@ -85,52 +88,5 @@ pub fn validate_context(context: &RepositoryContext) -> Result<(), String> {
         Err("repository context is required".to_owned())
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_memory;
-    use crate::memory::model::{EvidenceReference, MemoryRecord};
-    use crate::source::RepositoryContext;
-
-    fn record(lifecycle: &str, evidence: Vec<EvidenceReference>) -> MemoryRecord {
-        MemoryRecord {
-            memory_id: "memory".into(),
-            owner_id: "owner".into(),
-            kind: "semantic".into(),
-            scope: "user".into(),
-            lifecycle: lifecycle.into(),
-            freshness: "fresh".into(),
-            payload_json: "{}".into(),
-            context: RepositoryContext {
-                repository_id: "repo".into(),
-                workspace_id: "workspace".into(),
-                source_snapshot_id: "snapshot".into(),
-                graph_version: "graph".into(),
-            },
-            evidence,
-            idempotency_key: "idem".into(),
-            version: 1,
-            created_at: String::new(),
-            updated_at: String::new(),
-        }
-    }
-
-    #[test]
-    fn validated_memory_requires_same_snapshot_evidence() {
-        let evidence = EvidenceReference {
-            path: "src/lib.rs".into(),
-            start_line: 1,
-            end_line: 2,
-            snapshot_id: "snapshot".into(),
-        };
-        assert!(validate_memory(&record("validated", vec![evidence.clone()])).is_ok());
-        let wrong = EvidenceReference {
-            snapshot_id: "other".into(),
-            ..evidence
-        };
-        assert!(validate_memory(&record("validated", vec![wrong])).is_err());
-        assert!(validate_memory(&record("validated", Vec::new())).is_err());
     }
 }

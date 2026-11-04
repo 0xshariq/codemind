@@ -1,9 +1,19 @@
+//! Identity helpers for stable repository keys, captured source manifests, and
+//! graph projections. These are deliberately separate identity domains:
+//! repository identity comes from a trusted stable key (remote normalization
+//! belongs to `repository::identity`), snapshot identity comes from the source
+//! manifest, and graph version identifies the projection contract for a
+//! snapshot. A Git commit ID must never replace the source snapshot ID or graph version.
+
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// Bump this revision when the canonical graph projection contract changes in
-/// a way that can alter graph meaning for identical captured source bytes.
-pub const GRAPH_PROJECTION_VERSION: &str = "codemind-canonical-graph-v2";
+/// a way that can alter graph meaning for identical captured source bytes. The
+/// v4 adds the explicit Test Graph node/relationship contract while preserving
+/// the repository-scoped Code/TIE identities introduced by v3. A Git
+/// transport/history implementation alone does not change this contract.
+pub const GRAPH_PROJECTION_VERSION: &str = "codemind-canonical-graph-v4";
 
 /// Stable lowercase SHA-256 hex digest. Keep all persisted digest generation
 /// routed through this helper rather than adding module-specific hash logic.

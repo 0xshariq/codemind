@@ -59,24 +59,26 @@ pub fn allows(record_scope: &str, requested_scope: &str, context: &RepositoryCon
 }
 
 #[cfg(test)]
-mod tests {
+mod level1_tests {
     use super::AccessContext;
-    use crate::source::RepositoryContext;
 
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        }
+    #[test]
+    fn access_context_requires_principal_workspace_and_supported_scope() {
+        assert!(AccessContext::new("user-1", "user", "workspace-1").is_ok());
+        assert!(AccessContext::new("team-1", "team", "workspace-1").is_ok());
+        assert!(AccessContext::new("user-1", "repository", "workspace-1").is_ok());
+
+        assert!(AccessContext::new("", "user", "workspace-1").is_err());
+        assert!(AccessContext::new("user-1", "user", " ").is_err());
+        assert!(AccessContext::new("user-1", "global", "workspace-1").is_err());
     }
 
     #[test]
-    fn access_context_enforces_principal_and_workspace_for_user_scope() {
-        let access = AccessContext::new("user-1", "user", "workspace").unwrap();
-        assert!(access.allows_record("user", "user-1", &context()));
-        assert!(!access.allows_record("user", "user-2", &context()));
-        assert!(!access.allows_record("team", "user-1", &context()));
+    fn access_context_validation_rejects_mutated_invalid_values() {
+        let mut access = AccessContext::new("user-1", "user", "workspace-1").unwrap();
+        assert!(access.validate().is_ok());
+
+        access.requested_scope = "global".into();
+        assert!(access.validate().is_err());
     }
 }

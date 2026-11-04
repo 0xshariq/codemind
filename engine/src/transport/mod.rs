@@ -3,75 +3,48 @@ pub mod progress;
 pub mod server;
 
 #[cfg(test)]
-mod integration_tests {
+mod level2_tests {
     use super::conversions;
-    use crate::contract::result::{CanonicalResult, Completeness, Correlation, Freshness, Outcome};
-    use crate::source::RepositoryContext;
 
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        }
+    #[test]
+    fn protobuf_repository_context_values_are_validated_before_dispatch() {
+        assert!(
+            conversions::validate_context_values("repo-1", "workspace-1", "snapshot-1", "graph-1",)
+                .is_ok()
+        );
+
+        let empty_workspace =
+            conversions::validate_context_values("repo-1", "  ", "snapshot-1", "graph-1")
+                .unwrap_err();
+        assert!(empty_workspace.contains("workspace_id"));
+
+        let control_character =
+            conversions::validate_context_values("repo-1", "workspace-1", "snapshot\n1", "graph-1")
+                .unwrap_err();
+        assert!(control_character.contains("source_snapshot_id"));
+
+        let oversized = "x".repeat(513);
+        let too_long =
+            conversions::validate_context_values("repo-1", &oversized, "snapshot-1", "graph-1")
+                .unwrap_err();
+        assert!(too_long.contains("workspace_id"));
     }
 
     #[test]
-    fn canonical_result_conversion_validates_metadata_before_serialization() {
-        let result = CanonicalResult::new(
-            context(),
-            Correlation {
-                request_id: "request".into(),
-                trace_id: "trace".into(),
-                operation_id: "operation".into(),
-            },
-            Outcome::Success,
-            Completeness::Complete,
-            Freshness::Current,
-            vec!["entity".to_owned()],
+    fn repository_resolution_validates_workspace_without_requiring_a_snapshot() {
+        assert_eq!(
+            conversions::workspace_id("workspace-1").unwrap(),
+            "workspace-1"
         );
-        let json = conversions::canonical_json(&result).unwrap();
-        assert!(json.contains("\"request_id\":\"request\""));
-        assert!(json.contains("\"source_snapshot_id\":\"snapshot\""));
-    }
-}
-
-#[cfg(test)]
-mod level_two_server_tests {
-    use super::server::RepositoryServer;
-    use crate::contract::generated::{self, repository_service_server::RepositoryService};
-    use std::fs;
-    use tempfile::tempdir;
-    use tonic::Request;
-
-    #[tokio::test]
-    async fn repository_server_uses_the_source_boundary_and_returns_a_real_snapshot() {
-        let root = tempdir().unwrap();
-        fs::write(root.path().join("lib.rs"), "fn target() {}\n").unwrap();
-        let response = RepositoryService::resolve_repository(
-            &RepositoryServer::default(),
-            Request::new(generated::ResolveRepositoryRequest {
-                source_path: root.path().to_string_lossy().into_owned(),
-                context: Some(generated::RepositoryContext {
-                    repository_id: "repo".into(),
-                    workspace_id: "workspace".into(),
-                    source_snapshot_id: "request-snapshot".into(),
-                    graph_version: "request-graph".into(),
-                }),
-                correlation: None,
-            }),
-        )
-        .await
-        .unwrap()
-        .into_inner();
-        let snapshot = match response.result.unwrap() {
-            generated::resolve_repository_response::Result::Snapshot(snapshot) => snapshot,
-            generated::resolve_repository_response::Result::Error(error) => {
-                panic!("repository resolution failed: {}", error.message);
-            }
-        };
-        assert!(snapshot.manifest_json.contains("lib.rs"));
-        assert!(!snapshot.context.unwrap().source_snapshot_id.is_empty());
+        assert!(
+            conversions::workspace_id("")
+                .unwrap_err()
+                .contains("workspace_id")
+        );
+        assert!(
+            conversions::workspace_id("bad\nworkspace")
+                .unwrap_err()
+                .contains("workspace_id")
+        );
     }
 }
