@@ -1940,7 +1940,7 @@ impl GraphStorage for FalkorDbStorage {
         let mut graph = self.ready_graph(&graph_name).await?;
         let mut rows = graph
             .ro_query(
-                "MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r1:PRODUCES|ANALYZES|HAS_RISK|RECOMMENDS]->(target) RETURN type(r1) AS kind, run.id AS from_id, target.id AS to_id UNION MATCH (impact:ImpactAnalysis {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r2:AFFECTS|SUPPORTED_BY]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:PRODUCES]->(impact) RETURN type(r2) AS kind, impact.id AS from_id, target.id AS to_id UNION MATCH (set:ChangeSet {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r3:CONTAINS_CHANGE]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:ANALYZES]->(set) RETURN type(r3) AS kind, set.id AS from_id, target.id AS to_id UNION MATCH (risk:RiskAssessment {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r4:SUPPORTED_BY]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:HAS_RISK]->(risk) RETURN type(r4) AS kind, risk.id AS from_id, target.id AS to_id UNION MATCH (test:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r5:SUPPORTED_BY]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:RECOMMENDS]->(test) RETURN type(r5) AS kind, test.id AS from_id, target.id AS to_id LIMIT $limit",
+                "MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r1:PRODUCES|ANALYZES|HAS_RISK|RECOMMENDS]->(target) RETURN type(r1) AS kind, run.id AS from_id, target.id AS to_id UNION MATCH (impact:ImpactAnalysis {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r2:AFFECTS|SUPPORTED_BY]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:PRODUCES]->(impact) RETURN type(r2) AS kind, impact.id AS from_id, target.id AS to_id UNION MATCH (set:ChangeSet {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r3:CONTAINS_CHANGE]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:ANALYZES]->(set) RETURN type(r3) AS kind, set.id AS from_id, target.id AS to_id UNION MATCH (risk:RiskAssessment {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r4:SUPPORTED_BY]->(target) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:HAS_RISK]->(risk) RETURN type(r4) AS kind, risk.id AS from_id, target.id AS to_id UNION MATCH (test:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r5:SUPPORTED_BY]->(e:Evidence {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) MATCH (run:AnalysisRun {id: $run_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[:RECOMMENDS]->(test) MATCH (run)-[:PRODUCES]->(impact:ImpactAnalysis)-[:SUPPORTED_BY]->(e) RETURN type(r5) AS kind, test.id AS from_id, e.id AS to_id LIMIT $limit",
             )
             .with_param("run_id", analysis_run_id.to_owned())
             .with_param("workspace", context.workspace_id.clone())
@@ -2021,6 +2021,65 @@ impl GraphStorage for FalkorDbStorage {
             resolution: crate::engines::coie::model::ResolutionStatus::Resolved,
             evidence: None,
         }))
+    }
+
+    async fn exact_code_entities_by_name(
+        &self,
+        context: &RepositoryContext,
+        name: &str,
+    ) -> Result<Vec<GraphEntity>, StorageError> {
+        Self::validate_context(context)?;
+        let name = name.trim();
+        if name.is_empty() || name.len() > 500 {
+            return Err(StorageError::Query(
+                "entity name must contain 1 to 500 characters".to_owned(),
+            ));
+        }
+        let graph_name = self.graph_name_for_workspace(&context.workspace_id)?;
+        let mut graph = self.ready_graph(&graph_name).await?;
+        let mut rows = graph
+            .ro_query(
+                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE n.name = $name AND n.kind IN ['Symbol', 'File'] RETURN n.id AS id, n.kind AS kind, n.name AS name, n.path AS path, n.line AS line ORDER BY n.path, n.line",
+            )
+            .with_param("name", name.to_owned())
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("snapshot", context.source_snapshot_id.clone())
+            .with_param("graph_version", context.graph_version.clone())
+            .with_timeout(self.query_timeout_ms).execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+
+        let mut entities = Vec::new();
+        while let Some(row) = rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            entities.push(GraphEntity {
+                id: row
+                    .try_get("id")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                kind: parse_entity_kind(
+                    row.try_get("kind")
+                        .map_err(|error| StorageError::Query(error.to_string()))?,
+                )?,
+                name: row
+                    .try_get("name")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                path: row
+                    .try_get("path")
+                    .map_err(|error| StorageError::Query(error.to_string()))?,
+                line: row
+                    .try_get::<i64>("line")
+                    .map_err(|error| StorageError::Query(error.to_string()))?
+                    as u32,
+                context: context.clone(),
+                language: None,
+                native_kind: None,
+                range: None,
+                resolution: crate::engines::coie::model::ResolutionStatus::Resolved,
+                evidence: None,
+            });
+        }
+        Ok(entities)
     }
 
     async fn search_code_entities(
@@ -2241,6 +2300,7 @@ impl GraphStorage for FalkorDbStorage {
     ) -> Result<crate::graph_storage::port::StoredTestGraph, StorageError> {
         Self::validate_context(context)?;
         let limit = limit.clamp(1, 100);
+        let query_limit = limit.saturating_add(1);
         let graph_name = self.graph_name_for_workspace(&context.workspace_id)?;
         let mut graph = self.ready_graph(&graph_name).await?;
 
@@ -2255,7 +2315,7 @@ impl GraphStorage for FalkorDbStorage {
                 .with_param("snapshot", context.source_snapshot_id.clone())
                 .with_param("graph_version", context.graph_version.clone())
                 .with_param("targets", target_entity_ids.to_vec())
-                .with_param("limit", limit as i64)
+                .with_param("limit", query_limit as i64)
                 .with_timeout(self.query_timeout_ms).execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
@@ -2319,6 +2379,8 @@ impl GraphStorage for FalkorDbStorage {
             }
         }
 
+        let mut truncated = relationships.len() > limit;
+        relationships.truncate(limit);
         let test_ids: Vec<String> = relationships
             .iter()
             .map(|relationship| relationship.test_id.clone())
@@ -2337,7 +2399,7 @@ impl GraphStorage for FalkorDbStorage {
                 .with_param("snapshot", context.source_snapshot_id.clone())
                 .with_param("graph_version", context.graph_version.clone())
                 .with_param("test_ids", test_ids)
-                .with_param("limit", limit as i64)
+                .with_param("limit", query_limit as i64)
                 .with_timeout(self.query_timeout_ms).execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
@@ -2374,9 +2436,12 @@ impl GraphStorage for FalkorDbStorage {
             }
         }
 
+        truncated |= tests.len() > limit;
+        tests.truncate(limit);
         Ok(crate::graph_storage::port::StoredTestGraph {
             tests,
             relationships,
+            truncated,
         })
     }
 

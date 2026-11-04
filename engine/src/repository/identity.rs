@@ -409,6 +409,7 @@ fn normalize_remote_locator_with_suffix(
         return Err(RepositoryIdentityError::RemoteQueryOrFragment);
     }
 
+    let is_scp_form = !value.contains("://");
     let (scheme, user_prefix, authority, path) =
         if let Some((scheme, remainder)) = value.split_once("://") {
             let scheme = scheme.to_ascii_lowercase();
@@ -454,7 +455,15 @@ fn normalize_remote_locator_with_suffix(
     let authority = normalize_authority(&scheme, authority)?;
     let path = normalize_repository_path(path, strip_git_suffix)?;
     let user_prefix = user_prefix.unwrap_or_default();
-    Ok(format!("{scheme}://{user_prefix}{authority}/{path}"))
+    if is_scp_form
+        && !value
+            .split_once(':')
+            .is_some_and(|(_, path)| path.starts_with('/'))
+    {
+        Ok(format!("git@{authority}:{path}"))
+    } else {
+        Ok(format!("{scheme}://{user_prefix}{authority}/{path}"))
+    }
 }
 
 fn normalize_authority(scheme: &str, authority: &str) -> Result<String, RepositoryIdentityError> {
@@ -680,14 +689,30 @@ mod tests {
         let https_plain = RepositoryIdentity::from_remote("https://github.com/owner/repo").unwrap();
         assert_eq!(https.repository_id(), https_plain.repository_id());
 
-        let scp = RepositoryIdentity::from_remote("git@GitHub.com:owner/repo.git").unwrap();
-        let ssh = RepositoryIdentity::from_remote("ssh://git@github.com/owner/repo/").unwrap();
-        assert_eq!(scp.canonical_locator(), "ssh://git@github.com/owner/repo");
+        let scp_relative =
+            RepositoryIdentity::from_remote("git@GitHub.com:owner/repo.git").unwrap();
+        let scp_absolute =
+            RepositoryIdentity::from_remote("git@github.com:/owner/repo.git").unwrap();
+        let ssh_absolute =
+            RepositoryIdentity::from_remote("ssh://git@github.com/owner/repo/").unwrap();
         assert_eq!(
-            scp.remote_locator(),
+            scp_relative.canonical_locator(),
+            "git@github.com:owner/repo"
+        );
+        assert_eq!(
+            scp_relative.remote_locator(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert_eq!(
+            scp_absolute.canonical_locator(),
+            "ssh://git@github.com/owner/repo"
+        );
+        assert_eq!(
+            scp_absolute.remote_locator(),
             Some("ssh://git@github.com/owner/repo.git")
         );
-        assert_eq!(scp.repository_id(), ssh.repository_id());
+        assert_eq!(scp_absolute.repository_id(), ssh_absolute.repository_id());
+        assert_ne!(scp_relative.repository_id(), scp_absolute.repository_id());
     }
 
     #[test]

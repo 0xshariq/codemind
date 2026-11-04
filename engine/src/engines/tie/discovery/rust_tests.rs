@@ -88,7 +88,9 @@ fn rstest_cases(function: tree_sitter::Node<'_>, source: &[u8]) -> Vec<TestCaseD
             .chars()
             .filter(|character| !character.is_whitespace())
             .collect::<String>();
-        if !normalized.starts_with("#[case(") || !normalized.ends_with(")]") {
+        if !(normalized.starts_with("#[case(") || normalized.starts_with("#[case::"))
+            || !normalized.ends_with(")]")
+        {
             continue;
         }
         ranges.push(range_of(*attribute));

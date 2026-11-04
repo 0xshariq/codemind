@@ -9,7 +9,7 @@ use crate::engines::{
     tie::model::{TestEntity, TestRelationship},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -199,6 +199,7 @@ impl TieResult {
         // more tests than the query-result budget. Bounded semantic reads are
         // enforced by TieQueryRequest and the storage/query boundaries instead.
         let mut test_ids = HashSet::with_capacity(self.tests.len());
+        let mut test_kinds = HashMap::with_capacity(self.tests.len());
         for test in &self.tests {
             test.context.ensure_matches(expected)?;
             if test.id.trim().is_empty()
@@ -219,6 +220,7 @@ impl TieResult {
                     test.id
                 )));
             }
+            test_kinds.insert(test.id.as_str(), test.kind);
         }
         for relationship in &self.relationships {
             relationship.context.ensure_matches(expected)?;
@@ -229,11 +231,9 @@ impl TieResult {
                     "TIE relationship references an unknown Test Graph source node".to_owned(),
                 ));
             }
-            let source_kind = self
-                .tests
-                .iter()
-                .find(|test| test.id == relationship.test_id)
-                .map(|test| test.kind)
+            let source_kind = test_kinds
+                .get(relationship.test_id.as_str())
+                .copied()
                 .ok_or_else(|| {
                     ContractError::InvalidInput("TIE relationship source is missing".to_owned())
                 })?;

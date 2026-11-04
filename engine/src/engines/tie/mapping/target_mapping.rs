@@ -112,7 +112,14 @@ fn resolve_declaration_target(
         return (Some(symbols[0].id.clone()), TestResolution::Resolved);
     }
     if symbols.len() > 1 {
-        return (None, TestResolution::Ambiguous);
+        let same_line = symbols
+            .iter()
+            .filter(|symbol| symbol.line == line)
+            .collect::<Vec<_>>();
+        return match same_line.as_slice() {
+            [symbol] => (Some(symbol.id.clone()), TestResolution::Resolved),
+            _ => (None, TestResolution::Ambiguous),
+        };
     }
 
     let files: Vec<_> = code_graph

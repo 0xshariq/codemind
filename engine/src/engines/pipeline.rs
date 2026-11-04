@@ -444,7 +444,7 @@ where
             .operation_id
             .clone()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| format!("operation:{}", Uuid::new_v4()));
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         tracing::info!(
             operation_id = %operation_id,
             repository_id = %request.snapshot.context.repository_id,
@@ -519,7 +519,20 @@ where
             .await?;
         let mut operation = Operation { record };
         let chie_stage = investigation_stage_order()[0];
-        self.stage_start(&mut operation, chie_stage).await?;
+        if let Err(error) = self.stage_start(&mut operation, chie_stage).await {
+            operation.record.error_code = Some(error_code(&error).to_owned());
+            if operation.record.state != OperationState::Failed {
+                let _ = operation.transition(OperationState::Failed);
+            }
+            if let Err(persist_error) = self.storage.persist_operation(&operation.record).await {
+                tracing::error!(
+                    operation_id = %operation.record.operation_id,
+                    error = %persist_error,
+                    "could not persist operation after investigation stage-start failure"
+                );
+            }
+            return Err(error);
+        }
         let result = async {
             let selected = self
                 .storage
@@ -592,6 +605,13 @@ where
                     &request.selected_entity_id,
                 )
                 .map_err(PipelineError::Engine)?;
+            if stored_test_graph.truncated {
+                mark_analysis_partial(&mut analysis);
+                analysis.limitations.push(
+                    "Stored Test Graph results were truncated at the bounded storage query limit."
+                        .to_owned(),
+                );
+            }
             if repository_knowledge_requires_partial(
                 request.knowledge_completeness == KnowledgeCompleteness::Complete,
                 request.omitted_file_count,
@@ -706,7 +726,28 @@ where
                 if operation.record.state != OperationState::Failed {
                     let _ = operation.transition(OperationState::Failed);
                 }
-                self.storage.persist_operation(&operation.record).await?;
+                let failed = operation.event(
+                    chie_stage.to_owned(),
+                    crate::contract::operation::StageState::Failed,
+                    error.to_string(),
+                );
+                if let Err(persist_error) = self.storage.persist_operation(&operation.record).await
+                {
+                    tracing::error!(
+                        operation_id = %operation.record.operation_id,
+                        error = %persist_error,
+                        "could not persist failed investigation operation"
+                    );
+                }
+                if let Ok(event) = failed
+                    && let Err(event_error) = self.persist_operation_event(&event).await
+                {
+                    tracing::error!(
+                        operation_id = %operation.record.operation_id,
+                        error = %event_error,
+                        "could not persist failed investigation operation event"
+                    );
+                }
                 Err(error)
             }
         }
@@ -841,6 +882,13 @@ where
                 &request.selected_entity_id,
             )
             .map_err(PipelineError::Engine)?;
+        if stored_test_graph.truncated {
+            mark_analysis_partial(&mut analysis);
+            analysis.limitations.push(
+                "Stored Test Graph results were truncated at the bounded storage query limit."
+                    .to_owned(),
+            );
+        }
         let omitted_file_count = request.snapshot.manifest.omitted_files.len() as u64;
         mark_analysis_partial(&mut analysis);
         analysis.limitations.push(

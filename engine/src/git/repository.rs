@@ -421,6 +421,14 @@ impl GitRepository {
         let status = run_git(
             "local-state-status",
             vec![
+                OsString::from("-c"),
+                OsString::from("core.fsmonitor=false"),
+                OsString::from("-c"),
+                OsString::from("core.untrackedCache=false"),
+                OsString::from("-c"),
+                OsString::from("core.hooksPath=/dev/null"),
+                OsString::from("-c"),
+                OsString::from("core.pager=cat"),
                 OsString::from("--no-optional-locks"),
                 OsString::from("status"),
                 OsString::from("--porcelain=v2"),

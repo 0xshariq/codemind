@@ -110,7 +110,7 @@ where
             return Err(Status::invalid_argument("symbol_name is required"));
         }
 
-        let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
+        let operation_id = uuid::Uuid::new_v4().to_string();
         let request_id = input
             .correlation
             .as_ref()
@@ -285,7 +285,7 @@ where
             return Err(Status::invalid_argument("source_path is required"));
         }
 
-        let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
+        let operation_id = uuid::Uuid::new_v4().to_string();
         let request_id = input
             .correlation
             .as_ref()

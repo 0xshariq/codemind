@@ -305,22 +305,35 @@ where
                         .retry_abandoned_cleanup(&marker.operation_id)
                     {
                         Ok(()) => {
-                            if let Some(state) = state.as_mut() {
-                                if state.cleanup_state == CleanupState::CleanupFailed {
-                                    let _ = state.set_cleanup_state(
-                                        CleanupState::CleanupPending,
-                                        Some(&marker.operation_id),
-                                    );
-                                }
-                                if state.cleanup_state == CleanupState::CleanupPending {
-                                    let _ = state.set_cleanup_state(
-                                        CleanupState::Cleaned,
-                                        Some(&marker.operation_id),
-                                    );
-                                }
-                                let _ = state.save(&self.paths);
+                            let durable_state_saved = if let Some(state) = state.as_mut() {
+                                let transition_result = (|| {
+                                    if state.cleanup_state == CleanupState::CleanupFailed {
+                                        state.set_cleanup_state(
+                                            CleanupState::CleanupPending,
+                                            Some(&marker.operation_id),
+                                        )?;
+                                    }
+                                    if state.cleanup_state == CleanupState::CleanupPending {
+                                        state.set_cleanup_state(
+                                            CleanupState::Cleaned,
+                                            Some(&marker.operation_id),
+                                        )?;
+                                    }
+                                    state.save(&self.paths)
+                                })();
+                                transition_result.is_ok()
+                            } else {
+                                true
+                            };
+                            if durable_state_saved {
+                                report.cleaned_abandoned += 1;
+                            } else {
+                                report.preserved_for_manual_review += 1;
+                                report.issues.push(WorkspaceRecoveryIssue {
+                                    operation_id: marker.operation_id.clone(),
+                                    code: "abandoned_cleanup_state_save_failed",
+                                });
                             }
-                            report.cleaned_abandoned += 1;
                         }
                         Err(_) => {
                             if let Some(state) = state.as_mut()

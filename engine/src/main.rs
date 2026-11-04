@@ -88,7 +88,14 @@ async fn main() -> Result<()> {
         .add_service(OperationServiceServer::new(operation_server))
         .add_service(MemoryServiceServer::new(memory_server))
         .add_service(IntelligenceServiceServer::new(intelligence_server))
-        .serve(addr)
+        .serve_with_shutdown(addr, async {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => info!("Ctrl+C received; shutting down CodeMind engine"),
+                Err(error) => {
+                    tracing::error!(%error, "failed to listen for Ctrl+C shutdown signal")
+                }
+            }
+        })
         .await
         .context("CodeMind gRPC server failed")?;
 

@@ -548,12 +548,36 @@ fn ensure_private_directory(path: &Path) -> Result<(), CodeMindPathsError> {
             });
         }
         Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(path).map_err(|source| CodeMindPathsError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::create_dir(path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                match fs::symlink_metadata(path) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(CodeMindPathsError::SymlinkDirectory {
+                            path: path.to_path_buf(),
+                        });
+                    }
+                    Ok(metadata) if !metadata.is_dir() => {
+                        return Err(CodeMindPathsError::NotDirectory {
+                            path: path.to_path_buf(),
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(source) => {
+                        return Err(CodeMindPathsError::Io {
+                            path: path.to_path_buf(),
+                            source,
+                        });
+                    }
+                }
+            }
+            Err(source) => {
+                return Err(CodeMindPathsError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        },
         Err(source) => {
             return Err(CodeMindPathsError::Io {
                 path: path.to_path_buf(),

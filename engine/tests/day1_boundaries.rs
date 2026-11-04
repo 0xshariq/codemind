@@ -107,6 +107,7 @@ fn language_and_test_boundaries_preserve_supported_semantics() {
         line: 1,
         framework: "pytest-unittest".to_owned(),
         status: TestStatus::Supported,
+        kind: Default::default(),
         context: context(),
     };
 

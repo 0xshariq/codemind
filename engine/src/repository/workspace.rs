@@ -662,7 +662,9 @@ impl WorkspaceManager {
     }
 
     /// Non-destructively list valid engine-owned workspaces for startup recovery.
-    /// Invalid/missing markers and symlinked entries are skipped, never cleaned.
+    /// Symlinked and non-directory entries are skipped, never cleaned. A
+    /// directory with an invalid or unreadable ownership marker is returned as
+    /// an error containing its path, so recovery cannot silently overlook it.
     /// The caller must determine whether a valid candidate is truly abandoned
     /// before invoking `cleanup`, because a scan alone cannot establish that no
     /// concurrent operation is still using it.
@@ -691,8 +693,14 @@ impl WorkspaceManager {
             let Some(operation_id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if let Ok(marker) = self.load_marker(&operation_id) {
-                workspaces.push(marker);
+            match self.load_marker(&operation_id) {
+                Ok(marker) => workspaces.push(marker),
+                Err(error) => {
+                    return Err(WorkspaceError::MarkerScanFailed {
+                        path: entry.path(),
+                        reason: error.to_string(),
+                    });
+                }
             }
         }
         workspaces.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
@@ -807,6 +815,8 @@ pub enum WorkspaceError {
     MarkerMissing,
     #[error("workspace marker is corrupt or inconsistent")]
     InvalidMarker,
+    #[error("could not load ownership marker for workspace directory {path:?}: {reason}")]
+    MarkerScanFailed { path: PathBuf, reason: String },
     #[error("workspace marker schema version {actual} is not supported (supported: {supported})")]
     UnsupportedMarkerVersion { actual: u32, supported: u32 },
     #[error("workspace marker claims ownership that does not match CodeMind's ownership contract")]

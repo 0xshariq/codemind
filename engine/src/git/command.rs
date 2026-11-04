@@ -163,6 +163,7 @@ pub(super) async fn run_git(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
         .env("GIT_CONFIG_NOSYSTEM", "1")

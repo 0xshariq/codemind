@@ -17,6 +17,7 @@ use std::{ffi::OsString, path::Path};
 const MAX_HISTORY_COMMITS: usize = 1_000;
 const MAX_PATHS_PER_COMMIT: usize = 50_000;
 const MAX_HISTORY_TOTAL_PATHS: usize = 100_000;
+const MAX_HISTORY_METADATA_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GitHistoryOptions {
@@ -119,9 +120,16 @@ pub async fn read_history(
 
     let mut commits = Vec::with_capacity(commit_ids.len());
     let mut retained_history_paths = 0_usize;
+    let mut retained_metadata_bytes = 0_usize;
     let mut history_complete = !has_more_commits && !is_shallow;
     for commit_id in &commit_ids {
         let metadata = read_commit_metadata(repository.root(), commit_id, config).await?;
+        let metadata_bytes = metadata.author.len().saturating_add(metadata.subject.len());
+        if retained_metadata_bytes.saturating_add(metadata_bytes) > MAX_HISTORY_METADATA_BYTES {
+            history_complete = false;
+            break;
+        }
+        retained_metadata_bytes = retained_metadata_bytes.saturating_add(metadata_bytes);
         let remaining_history_paths = options
             .max_total_paths
             .saturating_sub(retained_history_paths);

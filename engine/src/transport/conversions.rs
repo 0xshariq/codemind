@@ -152,7 +152,8 @@ pub fn canonical_json<T: serde::Serialize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_text, required_identifier, validate_change_depth};
+    use super::{context, normalized_text, required_identifier, validate_change_depth};
+    use crate::contract::generated;
 
     #[test]
     fn query_text_is_trimmed_bounded_and_rejects_controls() {
@@ -181,5 +182,18 @@ mod tests {
         assert_eq!(validate_change_depth(8).unwrap(), 8);
         assert!(validate_change_depth(0).is_err());
         assert!(validate_change_depth(9).is_err());
+    }
+
+    #[test]
+    fn context_conversion_rejects_empty_workspace_id() {
+        let value = generated::RepositoryContext {
+            repository_id: "repository-1".to_owned(),
+            workspace_id: String::new(),
+            source_snapshot_id: "snapshot-1".to_owned(),
+            graph_version: "graph-1".to_owned(),
+        };
+
+        let error = context(&value).unwrap_err();
+        assert!(error.contains("workspace_id"), "unexpected error: {error}");
     }
 }

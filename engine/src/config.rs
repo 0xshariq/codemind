@@ -272,4 +272,75 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn git_history_options_validate_each_supported_boundary() {
+        use crate::git::GitHistoryOptions;
+
+        let base = GitHistoryOptions::default();
+        let build = |options| {
+            Config::from_values_with_options(
+                "127.0.0.1",
+                50051,
+                "redis://127.0.0.1:6380",
+                "codemind",
+                30_000,
+                64,
+                options,
+                false,
+            )
+        };
+
+        assert!(build(base).is_ok());
+        assert!(
+            build(GitHistoryOptions {
+                max_commits: 0,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            build(GitHistoryOptions {
+                max_commits: 1_001,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            build(GitHistoryOptions {
+                max_changed_paths_per_commit: 0,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            build(GitHistoryOptions {
+                max_changed_paths_per_commit: 50_001,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            build(GitHistoryOptions {
+                max_total_paths: 0,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            build(GitHistoryOptions {
+                max_total_paths: 100_001,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            build(GitHistoryOptions {
+                max_commits: 1_000,
+                max_changed_paths_per_commit: 50_000,
+                max_total_paths: 100_000,
+            })
+            .is_ok()
+        );
+    }
 }

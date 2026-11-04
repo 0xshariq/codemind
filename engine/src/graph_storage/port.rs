@@ -24,6 +24,8 @@ pub struct DependencyPathResult {
 pub struct StoredTestGraph {
     pub tests: Vec<TestEntity>,
     pub relationships: Vec<TestRelationship>,
+    /// True when either bounded storage query had more rows than it retained.
+    pub truncated: bool,
 }
 
 /// Result of repository-scoped Code/Test projection retention. Candidates are
@@ -366,6 +368,14 @@ pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepositor
         context: &RepositoryContext,
         query: &str,
         limit: usize,
+    ) -> Result<Vec<GraphEntity>, StorageError>;
+
+    /// Return every Symbol/File whose name exactly matches the supplied name.
+    /// Unlike substring search this query is intended for uniqueness checks.
+    async fn exact_code_entities_by_name(
+        &self,
+        context: &RepositoryContext,
+        name: &str,
     ) -> Result<Vec<GraphEntity>, StorageError>;
 
     async fn relationships_for(

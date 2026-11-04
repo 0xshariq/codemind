@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 chrono = { version = "0.4.45", features = ["serde"] }
+dirs = "7.0.0"
 falkordb = { version = "0.10.4", features = ["tokio", "serde", "tracing"] }
 futures = "0.3.34"
 ignore = "0.4.33"
@@ -15,7 +16,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
-tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "fs", "signal", "sync", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "fs", "signal", "sync", "time", "process", "io-util"] }
 tokio-stream = { version = "0.1.19", features = ["net", "sync", "time"] }
 tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.6"

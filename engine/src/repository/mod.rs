@@ -36,7 +36,6 @@ pub use workspace::{
 #[cfg(test)]
 mod level2_tests {
     use super::*;
-    use std::process::Command;
 
     #[test]
     fn repository_modules_compose_stable_identity_state_and_workspace_contracts() {
@@ -94,44 +93,18 @@ mod level2_tests {
 
     #[test]
     fn codemind_checkout_persists_repository_state_under_the_home_dot_codemind_root() {
-        // The engine package is expected to be checked out at
-        // <codemind>/engine. The test uses that real working tree, while all
-        // writes are isolated to a temporary home directory.
-        let engine_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let repository_root = engine_root
-            .parent()
-            .expect("the CodeMind engine must live below the repository root");
-        assert!(
-            repository_root.join("README.md").is_file()
-                && repository_root.join("engine/Cargo.toml").is_file()
-                && repository_root.join(".git").exists(),
-            "this test must run from the CodeMind GitHub checkout"
-        );
-
-        let origin_output = Command::new("git")
-            .arg("-C")
-            .arg(repository_root)
-            .args(["remote", "get-url", "origin"])
-            .output()
-            .expect("read the CodeMind checkout's GitHub origin");
-        assert!(
-            origin_output.status.success(),
-            "the CodeMind checkout must have an origin remote: {}",
-            String::from_utf8_lossy(&origin_output.stderr)
-        );
-        let origin = String::from_utf8(origin_output.stdout).expect("Git origin must be UTF-8");
-        let origin = origin.trim();
+        // Use an isolated local directory and a fixed remote locator. This test
+        // must not depend on the contributor's checkout or Git configuration.
+        let repository_temp = tempfile::tempdir().expect("create isolated repository directory");
+        let repository_root = repository_temp.path();
+        let origin = "https://github.com/0xshariq/codemind.git";
         let repo_local_state_before = repository_root.join(".codemind").exists();
         let identity =
             RepositoryIdentity::from_local_directory_with_origin(repository_root, Some(origin))
-                .expect("derive CodeMind identity from its actual local checkout and origin");
-        assert!(
-            matches!(
-                identity.canonical_locator(),
-                "https://github.com/0xshariq/codemind" | "ssh://git@github.com/0xshariq/codemind"
-            ),
-            "unexpected CodeMind origin identity: {}",
-            identity.canonical_locator()
+                .expect("derive repository identity from fixed canonical remote");
+        assert_eq!(
+            identity.canonical_locator(),
+            "https://github.com/0xshariq/codemind"
         );
         assert_eq!(identity.kind(), RepositoryIdentityKind::Remote);
 
@@ -743,21 +716,39 @@ mod workspace_level2_tests {
     }
 
     #[test]
-    fn scan_is_non_destructive_and_returns_only_valid_owned_markers() {
+    fn scan_is_non_destructive_and_reports_invalid_owned_markers() {
         let (_home, manager, identity, scope) = manager();
+
         manager.create("op_valid", &identity, &scope, None).unwrap();
+
         manager
             .create("op_corrupt", &identity, &scope, None)
             .unwrap();
-        fs::write(
-            manager.paths().workspace_marker_path("op_corrupt").unwrap(),
-            b"{}",
-        )
-        .unwrap();
 
         let found = manager.scan_owned_workspaces().unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].operation_id, "op_valid");
+
+        assert_eq!(found.len(), 2);
+
+        assert!(found.iter().any(|marker| marker.operation_id == "op_valid"));
+
+        assert!(
+            found
+                .iter()
+                .any(|marker| marker.operation_id == "op_corrupt")
+        );
+
+        let corrupt_marker_path = manager.paths().workspace_marker_path("op_corrupt").unwrap();
+
+        fs::write(&corrupt_marker_path, b"{}").unwrap();
+
+        let error = manager.scan_owned_workspaces().unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkspaceError::MarkerScanFailed { path, .. }
+                if path == manager.paths().workspace_dir("op_corrupt").unwrap()
+        ));
+
         assert!(
             manager
                 .paths()
@@ -765,6 +756,8 @@ mod workspace_level2_tests {
                 .unwrap()
                 .exists()
         );
+
+        assert!(corrupt_marker_path.exists());
     }
 
     #[test]

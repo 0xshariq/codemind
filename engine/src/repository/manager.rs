@@ -505,6 +505,12 @@ where
                 crate::engines::pipeline::RepositoryPipelineDecision::Reuse
             ) {
                 let context = context_from_state(&state)?;
+                let selected = match symbol_name {
+                    Some(symbol_name) => {
+                        self.resolve_selected_entity(&context, symbol_name).await?
+                    }
+                    None => String::new(),
+                };
                 let mut operation =
                     Operation::new(operation_id, request_id, trace_id, context.clone())
                         .map_err(RepositoryManagerError::Operation)?;
@@ -535,12 +541,6 @@ where
                         message: "verified repository knowledge reused".to_owned(),
                     })
                     .await?;
-                let selected = match symbol_name {
-                    Some(symbol_name) => {
-                        self.resolve_selected_entity(&context, symbol_name).await?
-                    }
-                    None => String::new(),
-                };
                 if should_complete_repository_operation(symbol_name) {
                     self.complete_repository_only_operation(&mut operation)
                         .await?;
@@ -964,13 +964,14 @@ where
         if retention_preview.eligible_code_entities > 0
             || retention_preview.eligible_test_entities > 0
         {
-            self.storage
-                .prune_obsolete_graph_projections(
-                    &result.verification.context,
-                    &generation_id,
-                    false,
-                )
-                .await?;
+            // Do not delete an older projection while an investigation may
+            // still be reading it. The storage contract does not yet expose
+            // durable in-flight snapshot leases, so pruning remains preview-only.
+            tracing::warn!(
+                eligible_code_entities = retention_preview.eligible_code_entities,
+                eligible_test_entities = retention_preview.eligible_test_entities,
+                "obsolete graph projections retained until in-flight investigation protection is available"
+            );
         }
 
         let receipt = GraphVerificationReceipt {
@@ -1349,8 +1350,9 @@ where
     /// retry candidate for this exact repository/workspace scope.
     ///
     /// An active marker without a corresponding durable state owner is adopted
-    /// only for a brand-new scope with exactly one candidate. Ambiguous or
-    /// cleanup-pending states fail closed rather than creating another clone.
+    /// only for a brand-new scope with exactly one candidate. Explicitly
+    /// abandoned cleanup may be retried after marker phase/reason validation;
+    /// ambiguous or unverified cleanup states fail closed.
     fn prepare_owned_workspace(
         &self,
         state: &mut RepositoryState,
@@ -1401,9 +1403,27 @@ where
                 return Err(RepositoryManagerError::StateUnavailable);
             }
             CleanupState::CleanupPending | CleanupState::CleanupFailed => {
-                // The recovery coordinator must complete or preserve a
-                // verified cleanup before a new generation may be published.
-                return Err(RepositoryManagerError::StateUnavailable);
+                let operation_id = state_operation_id
+                    .as_deref()
+                    .ok_or(RepositoryManagerError::StateUnavailable)?;
+                let marker = self.workspaces.load_marker(operation_id)?;
+                if !matches!(
+                    marker.phase,
+                    WorkspacePhase::CleanupPending | WorkspacePhase::CleanupFailed
+                ) || marker.cleanup_reason
+                    != Some(crate::repository::WorkspaceCleanupReason::RetryAbandoned)
+                {
+                    // GraphsVerified cleanup still requires a fresh graph proof;
+                    // OperationFailed is retained for retry, not auto-deleted.
+                    return Err(RepositoryManagerError::StateUnavailable);
+                }
+                self.workspaces.retry_abandoned_cleanup(operation_id)?;
+                if state.cleanup_state == CleanupState::CleanupFailed {
+                    state.set_cleanup_state(CleanupState::CleanupPending, Some(operation_id))?;
+                }
+                state.set_cleanup_state(CleanupState::Cleaned, Some(operation_id))?;
+                state.save(&self.paths)?;
+                None
             }
         };
 
@@ -1595,20 +1615,10 @@ where
         context: &RepositoryContext,
         symbol_name: &str,
     ) -> Result<String, RepositoryManagerError> {
-        let candidates = self
+        let mut exact = self
             .storage
-            .search_code_entities(context, symbol_name, 100)
+            .exact_code_entities_by_name(context, symbol_name)
             .await?;
-        let mut exact = candidates
-            .into_iter()
-            .filter(|entity| {
-                matches!(
-                    entity.kind,
-                    crate::engines::coie::model::EntityKind::Symbol
-                        | crate::engines::coie::model::EntityKind::File
-                ) && entity.name == symbol_name
-            })
-            .collect::<Vec<_>>();
         exact.sort_by(|left, right| left.id.cmp(&right.id));
         match exact.as_slice() {
             [entity] => Ok(entity.id.clone()),
