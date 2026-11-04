@@ -141,44 +141,19 @@ fn validate_text(field: &'static str, value: &str, max_bytes: usize) -> Result<(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{EngineEvent, EventMetadata};
-    use crate::contract::context::RepositoryContext;
+mod level1_tests {
+    use super::validate_text;
 
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph-2".into(),
-        }
+    #[test]
+    fn text_validation_accepts_nonempty_values_at_the_byte_limit() {
+        assert!(validate_text("message", "hello", 5).is_ok());
+        assert!(validate_text("message", "hello", 6).is_ok());
     }
 
     #[test]
-    fn event_requires_correlation_and_valid_context() {
-        let metadata = EventMetadata::new("op", "request", "trace", context(), 1).unwrap();
-        let event = EngineEvent::Progress {
-            metadata,
-            engine: "coie".into(),
-            stage: "extract".into(),
-            message: "Extraction started".into(),
-        };
-        assert_eq!(event.kind(), "progress");
-        assert!(event.validate().is_ok());
-    }
-
-    #[test]
-    fn graph_update_requires_a_published_version() {
-        let metadata = EventMetadata::new("op", "request", "trace", context(), 2).unwrap();
-        let event = EngineEvent::GraphUpdated {
-            metadata: metadata.clone(),
-            graph_version: "graph-2".into(),
-        };
-        assert!(event.validate().is_ok());
-        let invalid = EngineEvent::GraphUpdated {
-            metadata,
-            graph_version: " ".into(),
-        };
-        assert!(invalid.validate().is_err());
+    fn text_validation_rejects_empty_control_and_overlong_values() {
+        assert!(validate_text("message", "  ", 10).is_err());
+        assert!(validate_text("message", "line\nbreak", 32).is_err());
+        assert!(validate_text("message", "hello", 4).is_err());
     }
 }

@@ -26,27 +26,3 @@ pub fn declarations(
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::declarations;
-    use crate::source::{Language, RepositoryContext};
-
-    #[test]
-    fn adapter_preserves_tsx_language_identity() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let candidates = declarations(
-            Language::Tsx,
-            "function view() { return null; }",
-            "src/view.tsx",
-            &context,
-        );
-        assert_eq!(candidates[0].language, Language::Tsx);
-        assert_eq!(candidates[0].path, "src/view.tsx");
-    }
-}

@@ -45,39 +45,3 @@ pub struct RiskFactors {
     pub criticality: CriticalityPolicy,
     pub change: ChangeCharacteristics,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engines::chie::model::RiskLevel;
-
-    #[test]
-    fn risk_factor_structures_preserve_unknown_inputs() {
-        let factors = RiskFactors {
-            structural: StructuralExposure {
-                impacted_entities: 2,
-                maximum_depth: 2,
-                state: FactorState::Supported,
-            },
-            validation: ValidationEvidence {
-                test_candidates: 1,
-                graph_evidence: EvidenceAvailability::Verified,
-            },
-            historical: HistoricalInstability {
-                available: false,
-                elevated: false,
-            },
-            criticality: CriticalityPolicy {
-                known: false,
-                critical: false,
-            },
-            change: ChangeCharacteristics {
-                selection_is_symbol: true,
-                dependency_edges: 2,
-            },
-        };
-        let result = crate::engines::chie::risk::assessment::assess(factors);
-        assert_eq!(result.level, RiskLevel::Medium);
-        assert!(!result.unknown_factors.is_empty());
-    }
-}

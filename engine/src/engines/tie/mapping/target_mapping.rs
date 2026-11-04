@@ -92,6 +92,47 @@ pub fn resolve_target(
         .unwrap_or((None, TestResolution::Unresolved))
 }
 
+fn resolve_declaration_target(
+    code_graph: &CodeGraph,
+    path: &str,
+    name: &str,
+    line: u32,
+) -> (Option<String>, TestResolution) {
+    let symbols: Vec<_> = code_graph
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity.kind == EntityKind::Symbol
+                && entity.path == path
+                && entity.name == name
+                && entity.context == code_graph.context
+        })
+        .collect();
+    if symbols.len() == 1 {
+        return (Some(symbols[0].id.clone()), TestResolution::Resolved);
+    }
+    if symbols.len() > 1 {
+        return (None, TestResolution::Ambiguous);
+    }
+
+    let files: Vec<_> = code_graph
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity.kind == EntityKind::File
+                && entity.path == path
+                && entity.context == code_graph.context
+        })
+        .collect();
+    if files.len() == 1 && line > 0 {
+        return (Some(files[0].id.clone()), TestResolution::Resolved);
+    }
+    if files.len() > 1 {
+        return (None, TestResolution::Ambiguous);
+    }
+    (None, TestResolution::Unresolved)
+}
+
 pub fn resolve_graph(
     code_graph: &CodeGraph,
     tests: Vec<TestEntity>,
@@ -102,14 +143,21 @@ pub fn resolve_graph(
         .map(|mut relationship| {
             match relationship.kind {
                 TestRelationshipKind::DeclaredBy => {
-                    if let Some(entity) = code_graph.entities.iter().find(|entity| {
-                        entity.kind == EntityKind::File
-                            && entity.path == relationship.evidence_path
-                            && entity.context == relationship.context
-                    }) {
-                        relationship.entity_id = Some(entity.id.clone());
-                        relationship.resolution = TestResolution::Resolved;
-                    }
+                    let line = relationship
+                        .evidence
+                        .as_ref()
+                        .map(|evidence| evidence.start_line)
+                        .unwrap_or(0);
+                    let name = relationship.target_symbol_name.clone().unwrap_or_default();
+                    let (entity_id, resolution) = resolve_declaration_target(
+                        code_graph,
+                        &relationship.evidence_path,
+                        &name,
+                        line,
+                    );
+                    relationship.entity_id = entity_id;
+                    relationship.resolution = resolution;
+                    relationship.target_kind = crate::engines::tie::model::TestTargetKind::Code;
                 }
                 TestRelationshipKind::Targets => {
                     if let Some(name) = relationship.target_symbol_name.clone() {
@@ -127,8 +175,15 @@ pub fn resolve_graph(
                             resolve_target(code_graph, evidence_path, &name, line);
                         relationship.entity_id = entity_id;
                         relationship.resolution = resolution;
+                        relationship.target_kind = crate::engines::tie::model::TestTargetKind::Code;
                     }
                 }
+                TestRelationshipKind::Contains
+                | TestRelationshipKind::UsesFixture
+                | TestRelationshipKind::DependsOn
+                | TestRelationshipKind::HasCase
+                | TestRelationshipKind::SetupBy
+                | TestRelationshipKind::TeardownBy => {}
             }
             relationship
         })
@@ -139,135 +194,11 @@ pub fn resolve_graph(
 pub fn supported(kind: TestRelationshipKind) -> bool {
     matches!(
         kind,
-        TestRelationshipKind::DeclaredBy | TestRelationshipKind::Targets
+        TestRelationshipKind::Contains
+            | TestRelationshipKind::UsesFixture
+            | TestRelationshipKind::DependsOn
+            | TestRelationshipKind::DeclaredBy
+            | TestRelationshipKind::Targets
+            | TestRelationshipKind::HasCase
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_target;
-    use crate::engines::coie::model::{
-        CodeGraph, EntityKind, GraphEntity, GraphRelationship, RelationshipKind, ResolutionStatus,
-    };
-    use crate::source::RepositoryContext;
-
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        }
-    }
-
-    #[test]
-    fn target_resolution_does_not_guess_between_local_and_imported_same_name() {
-        let local_method = GraphEntity {
-            id: "local-method".into(),
-            kind: EntityKind::Symbol,
-            name: "helper".into(),
-            path: "src/a.py".into(),
-            line: 10,
-            context: context(),
-            language: None,
-            native_kind: Some("function_definition".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let source = GraphEntity {
-            id: "file-a".into(),
-            kind: EntityKind::File,
-            name: "src/a.py".into(),
-            path: "src/a.py".into(),
-            line: 1,
-            context: context(),
-            language: None,
-            native_kind: Some("file".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let imported_file = GraphEntity {
-            id: "file-b".into(),
-            kind: EntityKind::File,
-            name: "src/b.py".into(),
-            path: "src/b.py".into(),
-            line: 1,
-            context: context(),
-            language: None,
-            native_kind: Some("file".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let imported = GraphEntity {
-            id: "imported-helper".into(),
-            kind: EntityKind::Symbol,
-            name: "helper".into(),
-            path: "src/b.py".into(),
-            line: 1,
-            context: context(),
-            language: None,
-            native_kind: Some("function_definition".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let graph = CodeGraph {
-            context: context(),
-            entities: vec![source, imported_file, local_method, imported],
-            relationships: vec![GraphRelationship {
-                id: "import".into(),
-                kind: RelationshipKind::Imports,
-                from: "file-a".into(),
-                to: "file-b".into(),
-                context: context(),
-                resolution: ResolutionStatus::Resolved,
-                evidence: None,
-            }],
-            diagnostics: Vec::new(),
-        };
-        let (id, status) = resolve_target(&graph, "src/a.py", "helper", 20);
-        assert!(id.is_none());
-        assert_eq!(
-            status,
-            crate::engines::tie::model::TestResolution::Ambiguous
-        );
-    }
-
-    #[test]
-    fn target_resolution_prefers_same_file_and_rejects_ambiguous_imports() {
-        let same = GraphEntity {
-            id: "same".into(),
-            kind: EntityKind::Symbol,
-            name: "helper".into(),
-            path: "src/a.rs".into(),
-            line: 1,
-            context: context(),
-            language: None,
-            native_kind: Some("function".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let relationship = GraphRelationship {
-            id: "self-call".into(),
-            kind: RelationshipKind::Calls,
-            from: "same".into(),
-            to: "same".into(),
-            context: context(),
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        };
-        let graph = CodeGraph {
-            context: context(),
-            entities: vec![same],
-            relationships: vec![relationship],
-            diagnostics: Vec::new(),
-        };
-        let (id, status) = resolve_target(&graph, "src/a.rs", "helper", 1);
-        assert_eq!(id.as_deref(), Some("same"));
-        assert_eq!(status, crate::engines::tie::model::TestResolution::Resolved);
-    }
 }

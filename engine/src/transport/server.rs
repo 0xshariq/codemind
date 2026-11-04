@@ -9,14 +9,45 @@ use crate::{
         intelligence_service_server::IntelligenceService, query_response,
         repository_service_server::RepositoryService,
     },
-    engines::{chie::ChieEngine, coie::model::CodeGraph},
     graph_storage::{GraphStorage, StorageError},
+    repository::RepositoryManager,
     source::RepositoryContext,
 };
 use futures::Stream;
 use std::{pin::Pin, sync::Arc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
+
+// The domain contract distinguishes `Freshness::Unknown`, but the current
+// protobuf enum does not expose an `Unknown` variant. Use its zero/default
+// value for graph-only queries whose live repository freshness was not
+// revalidated; the response limitation explains this state to clients.
+const UNVERIFIED_FRESHNESS_PROTO_VALUE: i32 = 0;
+
+/// Preserve the existing source-manifest JSON shape while exposing the
+/// independently verified repository freshness/completeness metadata. Reused
+/// repositories may have no source manifest because their workspace was
+/// intentionally deleted; in that case the metadata object remains the payload.
+fn repository_resolution_data_json(
+    manifest_json: Option<&str>,
+    knowledge_metadata: serde_json::Value,
+) -> Result<String, serde_json::Error> {
+    let Some(manifest_json) = manifest_json else {
+        let mut metadata_payload = knowledge_metadata.as_object().cloned().unwrap_or_default();
+        metadata_payload.insert("repository_knowledge".to_owned(), knowledge_metadata);
+        return serde_json::to_string(&serde_json::Value::Object(metadata_payload));
+    };
+    let mut manifest: serde_json::Value = serde_json::from_str(manifest_json)?;
+    if let Some(fields) = manifest.as_object_mut() {
+        fields.insert("repository_knowledge".to_owned(), knowledge_metadata);
+        serde_json::to_string(&manifest)
+    } else {
+        serde_json::to_string(&serde_json::json!({
+            "manifest": manifest,
+            "repository_knowledge": knowledge_metadata,
+        }))
+    }
+}
 
 pub struct IntelligenceServer<S> {
     storage: Arc<S>,
@@ -40,12 +71,17 @@ impl<S> MemoryServer<S> {
 
 pub struct OperationServer<S> {
     storage: Arc<S>,
-    provider: crate::source::SourceProvider,
+    repository_manager: Arc<RepositoryManager<S>>,
 }
 
 impl<S> OperationServer<S> {
-    pub fn new(storage: Arc<S>, provider: crate::source::SourceProvider) -> Self {
-        Self { storage, provider }
+    /// Construct the production operation service. Repository preparation and
+    /// source/indexing lifecycle are owned exclusively by the shared manager.
+    pub fn new(storage: Arc<S>, repository_manager: Arc<RepositoryManager<S>>) -> Self {
+        Self {
+            storage,
+            repository_manager,
+        }
     }
 }
 
@@ -73,46 +109,8 @@ where
         if input.symbol_name.trim().is_empty() {
             return Err(Status::invalid_argument("symbol_name is required"));
         }
-        let snapshot = self
-            .provider
-            .resolve_with_repository_identity(
-                &input.source_path,
-                &context.workspace_id,
-                (!context.repository_id.is_empty()).then_some(context.repository_id.as_str()),
-            )
-            .map_err(|error| Status::failed_precondition(error.to_string()))?;
-        let graph = crate::engines::coie::CoieEngine
-            .extract(&snapshot)
-            .map_err(|error| Status::failed_precondition(error.to_string()))?;
-        let selected = graph
-            .entities
-            .iter()
-            .filter(|entity| {
-                matches!(
-                    entity.kind,
-                    crate::engines::coie::model::EntityKind::Symbol
-                        | crate::engines::coie::model::EntityKind::File
-                ) && entity.name == input.symbol_name
-                    && entity.context == snapshot.context
-            })
-            .collect::<Vec<_>>();
-        let selected = match selected.as_slice() {
-            [selected] => selected,
-            [] => return Err(Status::not_found("selected symbol or file was not found")),
-            _ => {
-                return Err(Status::failed_precondition(
-                    "selected symbol or file is ambiguous",
-                ));
-            }
-        };
 
         let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
-        tracing::info!(
-            operation_id = %operation_id,
-            repository_id = %snapshot.context.repository_id,
-            selected_entity_id = %selected.id,
-            "Rust engine accepted investigation"
-        );
         let request_id = input
             .correlation
             .as_ref()
@@ -125,34 +123,43 @@ where
             .map(|correlation| correlation.trace_id.clone())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let initial_operation = crate::lifecycle::Operation::new(
-            operation_id.clone(),
-            request_id.clone(),
-            trace_id.clone(),
-            snapshot.context.clone(),
-        )
-        .map_err(Status::internal)?;
-        self.storage
-            .persist_operation(&initial_operation.record)
+
+        let knowledge = self
+            .repository_manager
+            .ensure_indexed(
+                &input.source_path,
+                &context.workspace_id,
+                None,
+                &input.symbol_name,
+                &operation_id,
+                &request_id,
+                &trace_id,
+            )
             .await
-            .map_err(storage_status)?;
+            .map_err(repository_manager_status)?;
 
         let pipeline =
             crate::engines::pipeline::InvestigationPipeline::new(Arc::clone(&self.storage));
-        let pipeline_request = crate::engines::pipeline::PipelineRequest {
-            snapshot: snapshot.clone(),
-            selected_entity_id: selected.id.clone(),
+        let verified_request = crate::engines::pipeline::VerifiedPipelineRequest {
+            context: knowledge.context.clone(),
+            selected_entity_id: knowledge.selected_entity_id.clone(),
             request_id,
             trace_id,
-            operation_id: Some(operation_id.clone()),
+            operation_id: operation_id.clone(),
+            knowledge_completeness: knowledge.completeness,
+            freshness: knowledge.freshness,
+            omitted_file_count: knowledge.omitted_file_count,
+            history_complete: knowledge.history_complete,
+            history_omitted_commits_at_least: knowledge.history_omitted_commits_at_least,
+            history_omitted_path_changes_at_least: knowledge.history_omitted_path_changes_at_least,
         };
         let pipeline_operation_id = operation_id.clone();
         tokio::spawn(async move {
-            if let Err(error) = pipeline.run(pipeline_request).await {
+            if let Err(error) = pipeline.run_verified(verified_request).await {
                 tracing::error!(
                     %pipeline_operation_id,
                     %error,
-                    "CodeMind investigation pipeline failed"
+                    "CodeMind verified investigation pipeline failed"
                 );
             }
         });
@@ -160,9 +167,9 @@ where
         Ok(Response::new(generated::StartInvestigationResponse {
             operation_id,
             context: Some(crate::transport::conversions::context_proto(
-                &snapshot.context,
+                &knowledge.context,
             )),
-            selected_entity_id: selected.id.clone(),
+            selected_entity_id: knowledge.selected_entity_id,
         }))
     }
 
@@ -245,13 +252,25 @@ where
     }
 }
 
-#[derive(Default)]
-pub struct RepositoryServer {
-    provider: crate::source::SourceProvider,
+/// Repository gRPC boundary backed by the same lifecycle manager used by
+/// investigations. Repository resolution is never a separate source-capture
+/// path, so it cannot create repository state that the operation service does
+/// not know about.
+pub struct RepositoryServer<S> {
+    repository_manager: Arc<RepositoryManager<S>>,
+}
+
+impl<S> RepositoryServer<S> {
+    pub fn new(repository_manager: Arc<RepositoryManager<S>>) -> Self {
+        Self { repository_manager }
+    }
 }
 
 #[tonic::async_trait]
-impl RepositoryService for RepositoryServer {
+impl<S> RepositoryService for RepositoryServer<S>
+where
+    S: GraphStorage + 'static,
+{
     async fn resolve_repository(
         &self,
         request: Request<generated::ResolveRepositoryRequest>,
@@ -260,36 +279,76 @@ impl RepositoryService for RepositoryServer {
         let context = input
             .context
             .ok_or_else(|| Status::invalid_argument("context is required"))?;
-        let workspace_id = if context.workspace_id.trim().is_empty() {
-            return Err(Status::invalid_argument("workspace_id is required"));
-        } else {
-            context.workspace_id
-        };
+        let workspace_id = crate::transport::conversions::workspace_id(&context.workspace_id)
+            .map_err(Status::invalid_argument)?;
         if input.source_path.trim().is_empty() {
             return Err(Status::invalid_argument("source_path is required"));
         }
-        let repository_identity =
-            (!context.repository_id.trim().is_empty()).then_some(context.repository_id.as_str());
-        let snapshot = self
-            .provider
-            .resolve_with_repository_identity(&input.source_path, workspace_id, repository_identity)
-            .map_err(|error| Status::failed_precondition(error.to_string()))?;
-        let repository_name = snapshot
-            .root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("repository")
-            .to_owned();
-        let manifest_json = serde_json::to_string(&snapshot.manifest).map_err(|error| {
-            Status::internal(format!("failed to serialize repository manifest: {error}"))
-        })?;
+
+        let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
+        let request_id = input
+            .correlation
+            .as_ref()
+            .map(|correlation| correlation.request_id.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let trace_id = input
+            .correlation
+            .as_ref()
+            .map(|correlation| correlation.trace_id.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // Repository resolution has no selected symbol. Use a repository-level
+        // readiness helper so it shares the exact same Rust-owned lifecycle as
+        // investigations rather than reconstructing source state independently.
+        let knowledge = self
+            .repository_manager
+            .ensure_repository_ready(
+                &input.source_path,
+                &workspace_id,
+                None,
+                &operation_id,
+                &request_id,
+                &trace_id,
+            )
+            .await
+            .map_err(repository_manager_status)?;
+
+        let knowledge_metadata = serde_json::json!({
+            "repository_id": knowledge.context.repository_id,
+            "source_snapshot_id": knowledge.context.source_snapshot_id,
+            "graph_version": knowledge.context.graph_version,
+            "complete": knowledge.complete,
+            "completeness": knowledge.completeness,
+            "freshness": knowledge.freshness,
+            "omitted_file_count": knowledge.omitted_file_count,
+            "history_complete": knowledge.history_complete,
+            "history_omitted_commits_at_least": knowledge.history_omitted_commits_at_least,
+            "history_omitted_path_changes_at_least": knowledge.history_omitted_path_changes_at_least,
+            "cleanup_state": knowledge.cleanup_state,
+            "head_commit": knowledge.head_commit,
+            "reused": knowledge.reused,
+        });
+        let manifest_json =
+            repository_resolution_data_json(knowledge.manifest_json.as_deref(), knowledge_metadata)
+                .map_err(|error| {
+                    Status::internal(format!("failed to serialize repository knowledge: {error}"))
+                })?;
+
         Ok(Response::new(generated::ResolveRepositoryResponse {
             result: Some(generated::resolve_repository_response::Result::Snapshot(
                 generated::RepositorySnapshot {
                     context: Some(crate::transport::conversions::context_proto(
-                        &snapshot.context,
+                        &knowledge.context,
                     )),
-                    repository_name,
+                    repository_name: input
+                        .source_path
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or("repository")
+                        .to_owned(),
                     manifest_json,
                 },
             )),
@@ -528,12 +587,65 @@ fn review_proto(record: ReviewContextRecord) -> Result<generated::ReviewContextR
 }
 
 fn repository_context(input: generated::RepositoryContext) -> Result<RepositoryContext, Status> {
-    Ok(RepositoryContext {
-        repository_id: input.repository_id,
-        workspace_id: input.workspace_id,
-        source_snapshot_id: input.source_snapshot_id,
-        graph_version: input.graph_version,
-    })
+    crate::transport::conversions::context(&input).map_err(Status::invalid_argument)
+}
+
+fn pipeline_status(error: crate::engines::pipeline::PipelineError) -> Status {
+    use crate::engines::pipeline::PipelineError;
+    match error {
+        PipelineError::InvalidInput(message) => Status::invalid_argument(message),
+        PipelineError::SelectedEntityNotFound => {
+            Status::not_found("selected symbol or file was not found")
+        }
+        PipelineError::SelectedEntityAmbiguous => {
+            Status::failed_precondition("selected symbol or file is ambiguous")
+        }
+        PipelineError::Storage(error) => storage_status(error),
+        PipelineError::Engine(message) => Status::failed_precondition(message),
+    }
+}
+
+fn repository_manager_status(error: crate::repository::RepositoryManagerError) -> Status {
+    use crate::repository::{CodeMindPathsError, RepositoryManagerError, WorkspaceRecoveryError};
+    match error {
+        RepositoryManagerError::InvalidRequest(message) => Status::invalid_argument(message),
+        RepositoryManagerError::SelectedEntityNotFound => {
+            Status::not_found("selected symbol or file was not found")
+        }
+        RepositoryManagerError::SelectedEntityAmbiguous => {
+            Status::failed_precondition("selected symbol or file is ambiguous")
+        }
+        RepositoryManagerError::Storage(error) => storage_status(error),
+        RepositoryManagerError::Operation(message) => Status::internal(message),
+        RepositoryManagerError::Identity(error) => Status::invalid_argument(error.to_string()),
+        RepositoryManagerError::State(error) => Status::failed_precondition(error.to_string()),
+        RepositoryManagerError::Workspace(error) => Status::failed_precondition(error.to_string()),
+        RepositoryManagerError::Git(error) => Status::failed_precondition(error.to_string()),
+        RepositoryManagerError::Source(error) => Status::failed_precondition(error.to_string()),
+        RepositoryManagerError::Indexing(error) => Status::failed_precondition(error.to_string()),
+        RepositoryManagerError::StateUnavailable => {
+            Status::failed_precondition("repository state is unavailable")
+        }
+        RepositoryManagerError::Paths(error) => {
+            let message = error.to_string();
+            match error {
+                CodeMindPathsError::InvalidPathComponent { .. } => {
+                    Status::invalid_argument(message)
+                }
+                _ => Status::internal(message),
+            }
+        }
+        RepositoryManagerError::Recovery(error) => {
+            let message = error.to_string();
+            match error {
+                WorkspaceRecoveryError::ScopeBusy => Status::aborted(message),
+                WorkspaceRecoveryError::Workspace(_) | WorkspaceRecoveryError::State(_) => {
+                    Status::failed_precondition(message)
+                }
+                WorkspaceRecoveryError::Paths(_) => Status::internal(message),
+            }
+        }
+    }
 }
 
 fn evidence(input: Vec<generated::SourceReference>) -> Vec<EvidenceReference> {
@@ -652,28 +764,21 @@ where
         request: Request<SearchCodeQuery>,
     ) -> Result<Response<QueryResponse>, Status> {
         let input = request.into_inner();
-        let context = repository_context(
-            input
-                .context
-                .ok_or_else(|| Status::invalid_argument("context is required"))?,
-        )?;
-        let query = input.query.trim();
-        if query.is_empty() || query.len() > 500 {
-            return Err(Status::invalid_argument(
-                "query must contain 1 to 500 characters",
-            ));
-        }
-        let requested_limit = input.limit.clamp(1, 100) as usize;
-        let mut matches = self
-            .storage
-            .search_code_entities(&context, query, requested_limit + 1)
+        let search_request = crate::transport::conversions::search_code_request(input)
+            .map_err(Status::invalid_argument)?;
+        let context = search_request.context.clone();
+        let query = search_request.query.clone();
+        let pipeline =
+            crate::engines::pipeline::InvestigationPipeline::new(Arc::clone(&self.storage));
+        let search = pipeline
+            .search_code(search_request)
             .await
-            .map_err(storage_status)?;
-        let truncated = matches.len() > requested_limit;
-        matches.truncate(requested_limit);
+            .map_err(pipeline_status)?;
+        let matches = search.matches;
+        let truncated = search.truncated;
         let data = serde_json::json!({
             "query": query,
-            "matches": matches,
+            "matches": &matches,
             "truncated": truncated,
         });
         let evidence = matches
@@ -703,17 +808,23 @@ where
                 } else {
                     generated::Completeness::Complete as i32
                 },
-                freshness: generated::Freshness::Current as i32,
+                freshness: UNVERIFIED_FRESHNESS_PROTO_VALUE,
                 context: Some(crate::transport::conversions::context_proto(&context)),
                 correlation: None,
                 data_json: serde_json::to_string(&data)
                     .map_err(|error| Status::internal(error.to_string()))?,
                 evidence,
                 diagnostics: Vec::new(),
-                limitations: if truncated {
-                    vec!["search results were truncated at the requested bound".to_owned()]
-                } else {
-                    Vec::new()
+                limitations: {
+                    let mut limitations = vec![
+                        "Repository freshness was not revalidated for this graph query; results are scoped to the supplied snapshot.".to_owned(),
+                    ];
+                    if truncated {
+                        limitations.push(
+                            "search results were truncated at the requested bound".to_owned(),
+                        );
+                    }
+                    limitations
                 },
             })),
         }))
@@ -724,19 +835,18 @@ where
         request: Request<SymbolRelationshipQuery>,
     ) -> Result<Response<QueryResponse>, Status> {
         let input = request.into_inner();
-        let context = repository_context(
-            input
-                .context
-                .ok_or_else(|| Status::invalid_argument("context is required"))?,
-        )?;
-        let requested_limit = input.limit.clamp(1, 100) as usize;
-        let mut relationships = self
-            .storage
-            .relationships_for(&context, &input.symbol_id, requested_limit + 1)
+        let relationship_request =
+            crate::transport::conversions::symbol_relationship_request(input)
+                .map_err(Status::invalid_argument)?;
+        let context = relationship_request.context.clone();
+        let pipeline =
+            crate::engines::pipeline::InvestigationPipeline::new(Arc::clone(&self.storage));
+        let query = pipeline
+            .query_symbol_relationships(relationship_request)
             .await
-            .map_err(storage_status)?;
-        let truncated = relationships.len() > requested_limit;
-        relationships.truncate(requested_limit);
+            .map_err(pipeline_status)?;
+        let relationships = query.relationships;
+        let truncated = query.truncated;
 
         let data = serde_json::to_string(&relationships)
             .map_err(|error| Status::internal(error.to_string()))?;
@@ -755,7 +865,7 @@ where
                 } else {
                     generated::Completeness::Complete as i32
                 },
-                freshness: generated::Freshness::Current as i32,
+                freshness: UNVERIFIED_FRESHNESS_PROTO_VALUE,
                 context: Some(crate::transport::conversions::context_proto(&context)),
                 correlation: None,
                 data_json: data,
@@ -772,10 +882,16 @@ where
                     })
                     .collect(),
                 diagnostics: Vec::new(),
-                limitations: if truncated {
-                    vec!["relationship result was truncated at the requested bound".to_owned()]
-                } else {
-                    Vec::new()
+                limitations: {
+                    let mut limitations = vec![
+                        "Repository freshness was not revalidated for this graph query; results are scoped to the supplied snapshot.".to_owned(),
+                    ];
+                    if truncated {
+                        limitations.push(
+                            "relationship result was truncated at the requested bound".to_owned(),
+                        );
+                    }
+                    limitations
                 },
             })),
         }))
@@ -786,114 +902,22 @@ where
         request: Request<ChangeAnalysisQuery>,
     ) -> Result<Response<QueryResponse>, Status> {
         let input = request.into_inner();
-        let context = repository_context(
-            input
-                .context
-                .ok_or_else(|| Status::invalid_argument("context is required"))?,
-        )?;
-        if input.max_depth == 0 || input.max_depth > 8 {
-            return Err(Status::invalid_argument(
-                "max_depth must be between 1 and 8",
-            ));
-        }
-
+        let analysis_request = crate::transport::conversions::change_analysis_request(input)
+            .map_err(Status::invalid_argument)?;
         tracing::info!(
-            repository_id = %context.repository_id,
-            source_snapshot_id = %context.source_snapshot_id,
-            symbol_id = %input.symbol_id,
-            max_depth = input.max_depth,
+            repository_id = %analysis_request.context.repository_id,
+            source_snapshot_id = %analysis_request.context.source_snapshot_id,
+            symbol_id = %analysis_request.target_entity_id,
+            max_depth = analysis_request.max_depth,
             "Rust engine started change analysis query"
         );
 
-        let selected = self
-            .storage
-            .entity_for(&context, &input.symbol_id)
+        let pipeline =
+            crate::engines::pipeline::InvestigationPipeline::new(Arc::clone(&self.storage));
+        let mut analysis = pipeline
+            .analyze_change_query(analysis_request)
             .await
-            .map_err(storage_status)?
-            .ok_or_else(|| Status::not_found("selected symbol or file was not found"))?;
-
-        let dependency_paths = self
-            .storage
-            .dependency_paths_for(
-                &context,
-                &input.symbol_id,
-                input.max_depth as usize,
-                crate::contract::result::MAX_PATHS,
-            )
-            .await
-            .map_err(storage_status)?;
-        let paths = dependency_paths.paths;
-
-        let mut entity_ids = vec![selected.id.clone()];
-        let mut relationships = Vec::new();
-        for path in &paths {
-            if !entity_ids.iter().any(|id| id == &path.terminal_entity_id) {
-                entity_ids.push(path.terminal_entity_id.clone());
-            }
-            relationships.extend(path.relationships.clone());
-            for relationship in &path.relationships {
-                if !entity_ids.iter().any(|id| id == &relationship.from) {
-                    entity_ids.push(relationship.from.clone());
-                }
-                if !entity_ids.iter().any(|id| id == &relationship.to) {
-                    entity_ids.push(relationship.to.clone());
-                }
-            }
-        }
-
-        let mut entities = Vec::new();
-        for id in entity_ids {
-            if let Some(entity) = self
-                .storage
-                .entity_for(&context, &id)
-                .await
-                .map_err(storage_status)?
-            {
-                entities.push(entity);
-            }
-        }
-
-        let target_ids = paths
-            .iter()
-            .map(|path| path.terminal_entity_id.clone())
-            .collect::<Vec<_>>();
-        let stored_tests = self
-            .storage
-            .tests_for_context(
-                &context,
-                &target_ids,
-                crate::contract::result::MAX_RELATIONSHIPS,
-            )
-            .await
-            .map_err(storage_status)?;
-
-        let graph = CodeGraph {
-            context: context.clone(),
-            entities,
-            relationships,
-            diagnostics: Vec::new(),
-        };
-
-        let mut analysis = ChieEngine {
-            max_depth: input.max_depth as usize,
-        }
-        .analyze(
-            &graph,
-            &stored_tests.tests,
-            &stored_tests.relationships,
-            &selected.id,
-        )
-        .map_err(Status::failed_precondition)?;
-        if dependency_paths.truncated {
-            analysis.truncated = true;
-            if let Some(impact) = analysis.impact.as_mut() {
-                impact.truncated = true;
-                impact.availability = crate::engines::chie::model::EvidenceAvailability::Partial;
-            }
-            analysis.limitations.push(
-                "Storage dependency paths were truncated at the bounded read limit.".to_owned(),
-            );
-        }
+            .map_err(pipeline_status)?;
 
         tracing::info!(
             repository_id = %analysis.context.repository_id,
@@ -905,6 +929,9 @@ where
             "Rust engine completed change analysis query"
         );
 
+        analysis.limitations.push(
+            "Repository freshness was not revalidated for this graph query; analysis is scoped to the supplied snapshot.".to_owned(),
+        );
         let analysis = fit_change_analysis_result(analysis);
         let data_json = serde_json::to_string(&analysis)
             .map_err(|error| Status::internal(error.to_string()))?;
@@ -937,7 +964,7 @@ where
                 } else {
                     generated::Completeness::Complete as i32
                 },
-                freshness: generated::Freshness::Current as i32,
+                freshness: UNVERIFIED_FRESHNESS_PROTO_VALUE,
                 context: Some(crate::transport::conversions::context_proto(
                     &analysis.context,
                 )),
@@ -1061,10 +1088,20 @@ fn access_context_from_context<T>(
     Ok(access)
 }
 
+fn schema_incompatible_status(expected: u32, actual: u32) -> Status {
+    Status::failed_precondition(format!(
+        "incompatible graph storage schema: expected {expected}, found {actual}"
+    ))
+}
+
 fn storage_status(error: StorageError) -> Status {
     match error {
         StorageError::InvalidContext => Status::invalid_argument("invalid repository context"),
         StorageError::Unavailable(message) => Status::unavailable(message),
+        StorageError::SchemaIncompatible { expected, actual } => {
+            schema_incompatible_status(expected, actual)
+        }
+        StorageError::Mapping(message) => Status::internal(message),
         StorageError::Query(message) if message.contains("not found") => Status::not_found(message),
         StorageError::Query(message)
             if message.contains("conflict") || message.contains("idempotency") =>
@@ -1081,55 +1118,44 @@ fn storage_status(error: StorageError) -> Status {
 }
 
 #[cfg(test)]
-mod bounded_change_analysis_tests {
-    use super::fit_change_analysis_result;
-    use crate::{
-        engines::chie::model::{ChangeAnalysis, RiskLevel, TestCandidate},
-        source::RepositoryContext,
-    };
+mod tests {
+    #[test]
+    fn schema_incompatibility_maps_to_failed_precondition() {
+        let status = super::schema_incompatible_status(2, 1);
+
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("expected 2, found 1"));
+    }
 
     #[test]
-    fn oversized_change_analysis_is_truncated_to_the_canonical_result_budget() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let analysis = ChangeAnalysis {
-            analysis_id: "analysis".into(),
-            context,
-            selected_entity_id: "selected".into(),
-            impact_paths: Vec::new(),
-            test_candidates: (0..100)
-                .map(|index| TestCandidate {
-                    test_id: format!("test-{index}"),
-                    name: "large-name".repeat(500),
-                    path: "tests/example.rs".into(),
-                    evidence_path: "tests/example.rs".into(),
-                    target_entity_id: None,
-                    evidence: None,
-                })
-                .collect(),
-            risk: RiskLevel::Unknown,
-            risk_assessment: None,
-            impact: None,
-            evidence: Vec::new(),
-            evidence_records: Vec::new(),
-            limitations: Vec::new(),
-            truncated: false,
-        };
+    fn repository_metadata_is_added_without_discarding_manifest_fields() {
+        let metadata = serde_json::json!({
+            "freshness": "unknown",
+            "completeness": "partial",
+            "omitted_file_count": 2,
+        });
+        let raw_manifest = r#"{"source_snapshot_id":"snapshot-a","file_count":3}"#;
+        let encoded = super::repository_resolution_data_json(Some(raw_manifest), metadata)
+            .expect("serialize merged repository data");
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded["source_snapshot_id"], "snapshot-a");
+        assert_eq!(decoded["file_count"], 3);
+        assert_eq!(decoded["repository_knowledge"]["freshness"], "unknown");
+        assert_eq!(decoded["repository_knowledge"]["completeness"], "partial");
+    }
 
-        let bounded = fit_change_analysis_result(analysis);
-        let encoded = serde_json::to_vec(&bounded).expect("analysis serializes");
-        assert!(encoded.len() <= crate::contract::result::MAX_SERIALIZED_BYTES - 64 * 1024);
-        assert!(bounded.truncated);
-        assert!(bounded.test_candidates.len() < 100);
-        assert!(
-            bounded
-                .limitations
-                .iter()
-                .any(|item| item.contains("serialized result byte limit"))
-        );
+    #[test]
+    fn reused_repository_without_manifest_still_returns_knowledge_metadata() {
+        let metadata = serde_json::json!({
+            "freshness": "current",
+            "completeness": "complete",
+        });
+        let encoded = super::repository_resolution_data_json(None, metadata)
+            .expect("serialize reused repository metadata");
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded["freshness"], "current");
+        assert_eq!(decoded["completeness"], "complete");
+        assert_eq!(decoded["repository_knowledge"]["freshness"], "current");
+        assert_eq!(decoded["repository_knowledge"]["completeness"], "complete");
     }
 }

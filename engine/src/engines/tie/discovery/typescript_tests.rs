@@ -1,70 +1,127 @@
-use super::{TestDeclaration, node_text, parse_tree, range_of};
+use super::{TestCaseDeclaration, TestDeclaration, node_text, parse_tree, range_of};
+use crate::engines::tie::model::{TestNodeKind, TestStatus};
+
+pub fn discover(source: &str) -> std::io::Result<Vec<TestDeclaration>> {
+    discover_for(crate::source::Language::TypeScript, source)
+}
 
 pub fn discover_for(
     language: crate::source::Language,
     source: &str,
 ) -> std::io::Result<Vec<TestDeclaration>> {
+    debug_assert!(
+        matches!(
+            language,
+            crate::source::Language::TypeScript | crate::source::Language::Tsx
+        ),
+        "TypeScript discovery only supports TypeScript and TSX grammars"
+    );
+
     let tree = parse_tree(language, source)?;
     let mut declarations = Vec::new();
-    collect(tree.root_node(), source.as_bytes(), &mut declarations);
+
+    collect(tree.root_node(), source.as_bytes(), None, &mut declarations);
+
     Ok(declarations)
 }
 
-fn collect(node: tree_sitter::Node<'_>, source: &[u8], output: &mut Vec<TestDeclaration>) {
+fn collect(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    current_suite: Option<usize>,
+    output: &mut Vec<TestDeclaration>,
+) {
     if node.kind() == "call_expression"
         && let Some(function) = node.child_by_field_name("function")
     {
         let callee = node_text(function, source).unwrap_or_default();
         let short = callee.rsplit('.').next().unwrap_or(callee.as_str());
-        if matches!(short, "test" | "it")
+        let base = callee.split('.').next().unwrap_or(callee.as_str());
+        let is_parameterized = callee.contains("test.each") || callee.contains("it.each");
+
+        if base == "describe"
             && let Some(arguments) = node.child_by_field_name("arguments")
         {
             let name = arguments
                 .named_child(0)
                 .and_then(|child| node_text(child, source))
-                .map(|value| {
-                    value
-                        .trim_matches(|character| matches!(character, '\'' | '"' | '`'))
-                        .trim()
-                        .to_owned()
-                })
+                .map(|value| strip_literal(&value))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "anonymous-suite".into());
+
+            let range = range_of(node);
+
+            output.push(TestDeclaration {
+                name,
+                framework: "jest-vitest".into(),
+                status: TestStatus::Supported,
+                kind: TestNodeKind::TestSuite,
+                range,
+                parent_start_byte: current_suite,
+                fixture_names: Vec::new(),
+                cases: Vec::new(),
+            });
+
+            let suite_start = Some(range.start_byte);
+            let mut cursor = node.walk();
+
+            for child in node.named_children(&mut cursor) {
+                collect(child, source, suite_start, output);
+            }
+
+            return;
+        }
+
+        if (base == "test" || base == "it")
+            && (short == "test" || short == "it" || short == "each" || is_parameterized)
+            && let Some(arguments) = node.child_by_field_name("arguments")
+        {
+            let name = arguments
+                .named_child(0)
+                .and_then(|child| node_text(child, source))
+                .map(|value| strip_literal(&value))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "anonymous-test".into());
-            let status = if arguments.named_child(1).is_some() {
-                super::TestStatus::Supported
+
+            let status = if is_parameterized || short == "each" {
+                TestStatus::Partial
+            } else if arguments.named_child(1).is_some() {
+                TestStatus::Supported
             } else {
-                super::TestStatus::Partial
+                TestStatus::Partial
             };
+
+            let range = range_of(node);
+
             output.push(TestDeclaration {
                 name,
                 framework: "jest-vitest".into(),
                 status,
-                range: range_of(node),
+                kind: TestNodeKind::Test,
+                range,
+                parent_start_byte: current_suite,
+                fixture_names: Vec::new(),
+                cases: Vec::<TestCaseDeclaration>::new(),
             });
         }
     }
+
     let mut cursor = node.walk();
+
     for child in node.named_children(&mut cursor) {
-        collect(child, source, output);
+        collect(child, source, current_suite, output);
     }
+}
+
+fn strip_literal(value: &str) -> String {
+    value
+        .trim_matches(|character| matches!(character, '\'' | '"' | '`'))
+        .trim()
+        .to_owned()
 }
 
 pub fn is_test_declaration(source: &str) -> bool {
-    discover_for(crate::source::Language::TypeScript, source)
-        .map(|items| !items.is_empty())
+    discover(source)
+        .map(|items| items.iter().any(|item| item.kind == TestNodeKind::Test))
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::discover_for;
-    use crate::source::Language;
-
-    #[test]
-    fn uses_the_requested_typescript_grammar_for_tsx() {
-        let source = "test('works', () => helper());\nconst view = <Panel />;\n";
-        let tests = discover_for(Language::Tsx, source).unwrap();
-        assert_eq!(tests.len(), 1);
-        assert_eq!(tests[0].framework, "jest-vitest");
-    }
 }

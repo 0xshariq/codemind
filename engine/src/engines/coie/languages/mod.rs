@@ -66,6 +66,43 @@ mod integration_tests {
     }
 
     #[test]
+    fn language_specific_modules_emit_the_shared_candidate_contract() {
+        let context = context();
+        let rust = rust::declarations("fn rust_fn() {}", "src/lib.rs", &context);
+        let javascript = javascript::declarations("function js_fn() {}", "src/lib.js", &context);
+        let typescript = typescript::declarations(
+            Language::TypeScript,
+            "function ts_fn() {}",
+            "src/lib.ts",
+            &context,
+        );
+        let tsx = typescript::declarations(
+            Language::Tsx,
+            "function View() { return <div />; }",
+            "src/view.tsx",
+            &context,
+        );
+        let python = python::declarations("def py_fn():\n    pass", "src/lib.py", &context);
+
+        for (candidates, expected_name, expected_language, expected_path) in [
+            (&rust, "rust_fn", Language::Rust, "src/lib.rs"),
+            (&javascript, "js_fn", Language::JavaScript, "src/lib.js"),
+            (&typescript, "ts_fn", Language::TypeScript, "src/lib.ts"),
+            (&tsx, "View", Language::Tsx, "src/view.tsx"),
+            (&python, "py_fn", Language::Python, "src/lib.py"),
+        ] {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.name == expected_name)
+                .unwrap_or_else(|| panic!("missing candidate {expected_name}"));
+            assert_eq!(candidate.language, expected_language);
+            assert_eq!(candidate.path, expected_path);
+            assert_eq!(candidate.context, context);
+            assert!(candidate.line > 0);
+        }
+    }
+
+    #[test]
     fn all_supported_adapters_feed_the_same_candidate_contract() {
         let samples = [
             (Language::Rust, "fn rust_fn() {}", "src/lib.rs"),

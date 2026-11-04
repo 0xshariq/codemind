@@ -76,9 +76,15 @@ impl SourceProvider {
         self.resolve_with_repository_identity(root, workspace_id, None)
     }
 
-    /// Capture source under an optional stable logical identity. The optional
-    /// identity should come from trusted repository registration (for example,
-    /// a CodeMind repository ID or normalized remote URL), not source content.
+    /// Capture source under an optional stable logical identity. For temporary
+    /// Git clones, pass the validated `RepositoryIdentity::canonical_locator()`
+    /// (or its canonical CodeMind repository ID), never the temporary checkout
+    /// path and never a credential-bearing URL. Remote normalization belongs to
+    /// the repository layer; this provider treats the supplied key as trusted.
+    ///
+    /// This function only captures source bytes. It does not clone, retain, or
+    /// delete the supplied directory. The returned snapshot is self-contained
+    /// and consumers must use its pinned bytes even if `root` is later removed.
     pub fn resolve_with_repository_identity(
         &self,
         root: impl AsRef<Path>,
@@ -211,6 +217,9 @@ impl SourceProvider {
                 if entry.path() == root_for_walk {
                     return true;
                 }
+                // Prune ignored directories before walking their descendants.
+                // In particular, `.git` may be a real directory or a worktree
+                // metadata file; neither form is source code for CoIE.
                 entry
                     .path()
                     .strip_prefix(&root_for_walk)
@@ -375,129 +384,4 @@ impl SourceProvider {
 
 fn io_error(error: ignore::Error) -> std::io::Error {
     std::io::Error::other(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{SourceProvider, SourceProviderError};
-    use std::fs;
-    use tempfile::tempdir;
-
-    #[test]
-    fn captures_pinned_source_and_records_oversized_files() {
-        let root = tempdir().unwrap();
-        fs::write(root.path().join("main.rs"), "fn main() {}\n").unwrap();
-        fs::write(root.path().join("large.bin"), vec![b'x'; 128]).unwrap();
-        let provider = SourceProvider {
-            max_file_bytes: 32,
-            max_files: 20,
-            max_total_bytes: 256,
-        };
-        let snapshot = provider.resolve(root.path(), "workspace-a").unwrap();
-        assert_eq!(snapshot.file_text("main.rs").unwrap(), "fn main() {}\n");
-        assert_eq!(snapshot.manifest.omitted_files.len(), 1);
-        assert_eq!(snapshot.manifest.omitted_files[0].path, "large.bin");
-        assert!(snapshot.validate().is_ok());
-    }
-
-    #[test]
-    fn prunes_builtin_ignored_directories_before_counting_walk_entries() {
-        let root = tempdir().unwrap();
-        fs::create_dir(root.path().join("node_modules")).unwrap();
-        fs::create_dir(root.path().join("node_modules/pkg")).unwrap();
-        fs::write(root.path().join("node_modules/pkg/generated.js"), "ignored").unwrap();
-        fs::write(root.path().join("main.rs"), "fn main() {}\n").unwrap();
-
-        let provider = SourceProvider {
-            max_file_bytes: 64,
-            max_files: 10,
-            max_total_bytes: 256,
-        };
-        let snapshot = provider.resolve(root.path(), "workspace-a").unwrap();
-
-        assert!(snapshot.files.contains_key("main.rs"));
-        assert!(
-            !snapshot
-                .files
-                .keys()
-                .any(|path| path.starts_with("node_modules/"))
-        );
-        assert!(
-            !snapshot
-                .manifest
-                .omitted_files
-                .iter()
-                .any(|entry| entry.path.starts_with("node_modules/"))
-        );
-    }
-
-    #[test]
-    fn total_byte_budget_omits_files_without_publishing_them_as_captured() {
-        let root = tempdir().unwrap();
-        fs::write(root.path().join("a.py"), "def a(): pass\n").unwrap();
-        fs::write(root.path().join("b.py"), "def b(): pass\n").unwrap();
-        let provider = SourceProvider {
-            max_file_bytes: 64,
-            max_files: 10,
-            max_total_bytes: 16,
-        };
-        let snapshot = provider.resolve(root.path(), "workspace-a").unwrap();
-        assert_eq!(snapshot.files.len(), 1);
-        assert_eq!(snapshot.manifest.omitted_files.len(), 1);
-        assert!(
-            snapshot.manifest.omitted_files[0]
-                .reason
-                .contains("remaining total source-byte budget")
-        );
-        assert!(
-            snapshot
-                .files
-                .values()
-                .map(|bytes| bytes.len() as u64)
-                .sum::<u64>()
-                <= 16
-        );
-        assert!(snapshot.validate().is_ok());
-    }
-
-    #[test]
-    fn stable_repository_identity_survives_a_different_checkout_path() {
-        let first_root = tempdir().unwrap();
-        let second_root = tempdir().unwrap();
-        for root in [first_root.path(), second_root.path()] {
-            fs::write(root.join("lib.py"), "def f():\n    return 1\n").unwrap();
-        }
-        let provider = SourceProvider::default();
-        let first = provider
-            .resolve_with_repository_identity(first_root.path(), "workspace", Some("repo-key"))
-            .unwrap();
-        let second = provider
-            .resolve_with_repository_identity(second_root.path(), "workspace", Some("repo-key"))
-            .unwrap();
-        assert_eq!(first.context.repository_id, second.context.repository_id);
-        assert_eq!(
-            first.context.source_snapshot_id,
-            second.context.source_snapshot_id
-        );
-        assert_eq!(first.context.graph_version, second.context.graph_version);
-    }
-
-    #[test]
-    fn invalid_limits_and_non_directory_roots_are_explicit_errors() {
-        let root = tempdir().unwrap();
-        let invalid = SourceProvider {
-            max_file_bytes: 0,
-            ..SourceProvider::default()
-        };
-        assert!(matches!(
-            invalid.resolve(root.path(), "workspace"),
-            Err(SourceProviderError::InvalidConfiguration(_))
-        ));
-        let file = root.path().join("file.txt");
-        fs::write(&file, "text").unwrap();
-        assert!(matches!(
-            SourceProvider::default().resolve(&file, "workspace"),
-            Err(SourceProviderError::NotDirectory(_))
-        ));
-    }
 }

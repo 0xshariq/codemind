@@ -53,12 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn evidence_normalization_rejects_parent_paths_and_snapshot_mismatch() {
-        assert_eq!(
-            normalize_path(r"tests\unit.py"),
-            Some("tests/unit.py".into())
-        );
-        assert!(normalize_path("../secret.py").is_none());
+    fn evidence_validation_requires_matching_snapshot_and_safe_range() {
         let evidence = SourceEvidence {
             path: "tests/unit.py".into(),
             start_line: 2,
@@ -72,5 +67,25 @@ mod tests {
             ..evidence
         };
         assert!(validate_evidence(&wrong, &context()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod level1_tests {
+    use super::normalize_path;
+
+    #[test]
+    fn normalizes_windows_separators_and_surrounding_whitespace() {
+        assert_eq!(
+            normalize_path(r"  tests\unit.py  "),
+            Some("tests/unit.py".into())
+        );
+    }
+
+    #[test]
+    fn rejects_empty_absolute_and_parent_traversal_paths() {
+        for invalid in ["", "   ", "/etc/passwd", "../secret.py", "src/../../secret"] {
+            assert!(normalize_path(invalid).is_none(), "accepted {invalid:?}");
+        }
     }
 }

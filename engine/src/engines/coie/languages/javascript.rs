@@ -20,23 +20,3 @@ pub fn declarations(source: &str, path: &str, context: &RepositoryContext) -> Ve
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::declarations;
-    use crate::source::{Language, RepositoryContext};
-
-    #[test]
-    fn adapter_emits_a_resolved_candidate_with_source_context() {
-        let context = RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        };
-        let candidates = declarations("function js_fn() {}", "src/test.js", &context);
-        assert!(!candidates.is_empty());
-        assert_eq!(candidates[0].language, Language::JavaScript);
-        assert_eq!(candidates[0].context, context);
-    }
-}

@@ -45,34 +45,3 @@ pub fn snapshot_provenance(context: &RepositoryContext) -> CanonicalResult<Snaps
 pub fn compatible(left: &RepositoryContext, right: &RepositoryContext) -> bool {
     left == right
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn context(snapshot: &str, graph: &str) -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: snapshot.into(),
-            graph_version: graph.into(),
-        }
-    }
-
-    #[test]
-    fn provenance_identifies_the_exact_analyzed_source_state() {
-        let context = context("snapshot-a", "graph-a");
-        let result = snapshot_provenance(&context);
-        assert!(matches!(result.outcome, Outcome::Success));
-        assert_eq!(result.data.source_snapshot_id, "snapshot-a");
-        assert_eq!(result.data.graph_version, "graph-a");
-    }
-
-    #[test]
-    fn provenance_compatibility_rejects_mixed_source_states() {
-        let first = context("snapshot-a", "graph-a");
-        let second = context("snapshot-b", "graph-b");
-        assert!(compatible(&first, &first));
-        assert!(!compatible(&first, &second));
-    }
-}

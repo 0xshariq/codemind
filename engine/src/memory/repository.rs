@@ -2,6 +2,11 @@ use super::model::{HandoffRecord, MemoryRecord, ReviewContextRecord};
 use crate::graph_storage::StorageError;
 use async_trait::async_trait;
 
+/// Workspace-partitioned persistence for Agent Memory and review handoffs.
+///
+/// The workspace in each record/context selects its physical storage partition.
+/// Scope and owner authorization remain separate checks and must not be inferred
+/// from the fact that two records reside in the same workspace graph.
 #[async_trait]
 pub trait MemoryRepository: Send + Sync {
     async fn persist_memory(&self, record: &MemoryRecord) -> Result<MemoryRecord, StorageError>;

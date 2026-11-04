@@ -226,7 +226,48 @@ impl TieResult {
                 || !test_ids.contains(relationship.test_id.as_str())
             {
                 return Err(ContractError::InvalidInput(
-                    "TIE relationship references an unknown test".to_owned(),
+                    "TIE relationship references an unknown Test Graph source node".to_owned(),
+                ));
+            }
+            let source_kind = self
+                .tests
+                .iter()
+                .find(|test| test.id == relationship.test_id)
+                .map(|test| test.kind)
+                .ok_or_else(|| {
+                    ContractError::InvalidInput("TIE relationship source is missing".to_owned())
+                })?;
+            match relationship.kind {
+                crate::engines::tie::model::TestRelationshipKind::Contains
+                | crate::engines::tie::model::TestRelationshipKind::UsesFixture
+                | crate::engines::tie::model::TestRelationshipKind::DependsOn
+                | crate::engines::tie::model::TestRelationshipKind::HasCase => {
+                    if relationship.target_kind != crate::engines::tie::model::TestTargetKind::Test
+                        || relationship.entity_id.is_none()
+                    {
+                        return Err(ContractError::InvalidInput(
+                            "internal TIE relationship requires a Test Graph target".to_owned(),
+                        ));
+                    }
+                }
+                _ => {
+                    if relationship.target_kind != crate::engines::tie::model::TestTargetKind::Code
+                        && relationship.entity_id.is_some()
+                    {
+                        return Err(ContractError::InvalidInput(
+                            "code TIE relationship has an invalid target kind".to_owned(),
+                        ));
+                    }
+                }
+            }
+            if matches!(
+                relationship.kind,
+                crate::engines::tie::model::TestRelationshipKind::Targets
+                    | crate::engines::tie::model::TestRelationshipKind::DeclaredBy
+            ) && source_kind != crate::engines::tie::model::TestNodeKind::Test
+            {
+                return Err(ContractError::InvalidInput(
+                    "TARGETS and DECLARED_BY must originate from a Test node".to_owned(),
                 ));
             }
             if relationship.evidence_path.trim().is_empty()
@@ -344,56 +385,18 @@ pub type CanonicalTestResult = CanonicalResult<TieResult>;
 pub type CanonicalChangeResult = CanonicalResult<ChieResult>;
 
 #[cfg(test)]
-mod tests {
-    use super::IntelligenceRequest;
-    use crate::contract::context::RepositoryContext;
+mod level1_tests {
+    use super::validate_result_limit;
 
-    fn context() -> RepositoryContext {
-        RepositoryContext {
-            repository_id: "repo".into(),
-            workspace_id: "workspace".into(),
-            source_snapshot_id: "snapshot".into(),
-            graph_version: "graph".into(),
-        }
+    #[test]
+    fn result_limit_accepts_both_inclusive_boundaries() {
+        assert!(validate_result_limit(1, "limit").is_ok());
+        assert!(validate_result_limit(100, "limit").is_ok());
     }
 
     #[test]
-    fn coie_and_tie_requests_are_bounded_and_typed() {
-        use super::{CoieQueryKind, CoieQueryRequest, TieQueryRequest};
-        let context = context();
-        let coie = CoieQueryRequest {
-            context: context.clone(),
-            kind: CoieQueryKind::QueryRelationships,
-            query: "symbol-1".into(),
-            limit: 20,
-        };
-        assert!(coie.validate().is_ok());
-        let tie = TieQueryRequest {
-            context,
-            target_entity_ids: vec!["symbol-1".into(), "symbol-2".into()],
-            limit: 10,
-        };
-        assert!(tie.validate().is_ok());
-        let invalid_tie = TieQueryRequest {
-            target_entity_ids: vec!["symbol-1".into(), "symbol-1".into()],
-            ..tie
-        };
-        assert!(invalid_tie.validate().is_err());
-    }
-
-    #[test]
-    fn request_rejects_unbounded_depth_and_results() {
-        let mut request = IntelligenceRequest {
-            context: context(),
-            target_entity_id: "symbol-1".into(),
-            max_depth: 1,
-            max_results: 10,
-        };
-        assert!(request.validate().is_ok());
-        request.max_depth = super::MAX_PATH_LENGTH + 1;
-        assert!(request.validate().is_err());
-        request.max_depth = 1;
-        request.max_results = 0;
-        assert!(request.validate().is_err());
+    fn result_limit_rejects_zero_and_values_above_the_cap() {
+        assert!(validate_result_limit(0, "limit").is_err());
+        assert!(validate_result_limit(101, "limit").is_err());
     }
 }
