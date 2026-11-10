@@ -23,7 +23,7 @@ use falkordb::{
     AsyncGraph, EntityType, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo, IndexType,
 };
 use futures::StreamExt;
-use std::{collections::HashSet, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
 /// FalkorDB adapter for the database-independent [`GraphStorage`] port.
@@ -59,7 +59,115 @@ pub(super) fn nonnegative_count(value: i64, operation: &str) -> Result<usize, St
     })
 }
 
+/// Append a length-prefixed string so identity fields cannot collide by delimiter.
+fn append_identity_component(material: &mut Vec<u8>, value: &str) {
+    material.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    material.extend_from_slice(value.as_bytes());
+}
+
+/// Compute the stable identity key for one entity within a source snapshot.
+fn code_entity_identity_key(entity: &GraphEntity) -> String {
+    let mut material = b"codemind-code-entity-identity-v1\0".to_vec();
+    append_identity_component(&mut material, &format!("{:?}", entity.kind));
+    append_identity_component(&mut material, &entity.path);
+    match &entity.kind {
+        EntityKind::Repository => append_identity_component(&mut material, &entity.name),
+        EntityKind::RepositorySnapshot => append_identity_component(&mut material, &entity.name),
+        EntityKind::Directory | EntityKind::File => {}
+        EntityKind::Module | EntityKind::Package => {
+            append_identity_component(&mut material, &entity.name);
+            append_identity_component(
+                &mut material,
+                entity.native_kind.as_deref().unwrap_or_default(),
+            );
+        }
+        EntityKind::Symbol => {
+            append_identity_component(&mut material, &entity.name);
+            append_identity_component(&mut material, &entity.line.to_string());
+            append_identity_component(
+                &mut material,
+                entity.native_kind.as_deref().unwrap_or_default(),
+            );
+            append_identity_component(
+                &mut material,
+                entity.language.map(|language| language.stable_name()).unwrap_or_default(),
+            );
+            if let Some(range) = &entity.range {
+                append_identity_component(&mut material, &range.start_byte.to_string());
+                append_identity_component(&mut material, &range.end_byte.to_string());
+            }
+        }
+    }
+    format!(
+        "coie-identity:{}",
+        crate::source::identity::digest_bytes(&material)
+    )
+}
+
+/// Build a conservative key for migrating pre-identity-map CodeEntity records.
+fn legacy_code_entity_identity_key(kind: &str, path: &str, name: &str, line: i64) -> String {
+    format!("legacy-entity:{kind}:{path}:{name}:{line}")
+}
+
+/// Compute a stable relationship key, including an ordinal for duplicate call sites.
+fn code_relationship_identity_key(
+    relationship: &GraphRelationship,
+    occurrence: usize,
+) -> String {
+    let mut material = b"codemind-code-relationship-identity-v1\0".to_vec();
+    for value in [
+        format!("{:?}", relationship.kind),
+        relationship.from.clone(),
+        relationship.to.clone(),
+        relationship
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.path.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        relationship
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.start_line.to_string())
+            .unwrap_or_default(),
+        relationship
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.end_line.to_string())
+            .unwrap_or_default(),
+        relationship
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.provenance.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        format!("{:?}", relationship.resolution),
+        occurrence.to_string(),
+    ] {
+        append_identity_component(&mut material, &value);
+    }
+    format!(
+        "coie-relationship-identity:{}",
+        crate::source::identity::digest_bytes(&material)
+    )
+}
+
+/// Build a conservative key for migrating pre-identity-map CoIE relationships.
+fn legacy_code_relationship_identity_key(
+    kind: &str,
+    from: &str,
+    to: &str,
+    evidence_path: &str,
+    start_line: i64,
+    end_line: i64,
+) -> String {
+    format!(
+        "legacy-relationship:{kind}:{from}:{to}:{evidence_path}:{start_line}:{end_line}"
+    )
+}
+
 impl FalkorDbStorage {
+    /// Connect to FalkorDB using the default query and connection limits.
     pub async fn connect(
         url: &str,
         graph_namespace: impl Into<String>,
@@ -67,6 +175,7 @@ impl FalkorDbStorage {
         Self::connect_with_limits(url, graph_namespace, 30_000, 64).await
     }
 
+    /// Connect to FalkorDB with explicit connection and query limits.
     pub async fn connect_with_limits(
         url: &str,
         graph_namespace: impl Into<String>,
@@ -1422,19 +1531,15 @@ impl GraphStorage for FalkorDbStorage {
         Ok(events)
     }
 
-    async fn write_code_graph(&self, graph_data: &CodeGraph) -> Result<(), StorageError> {
+    async fn write_code_graph(&self, graph_data: &CodeGraph) -> Result<CodeGraph, StorageError> {
         Self::validate_context(&graph_data.context)?;
         let graph_name = self.graph_name_for_workspace(&graph_data.context.workspace_id)?;
         let mut graph = self.ready_graph(&graph_name).await?;
-        let entity_ids: HashSet<&str> = graph_data
+
+        let incoming_entity_ids: HashSet<&str> = graph_data
             .entities
             .iter()
             .map(|entity| entity.id.as_str())
-            .collect();
-        let relationship_ids: HashSet<&str> = graph_data
-            .relationships
-            .iter()
-            .map(|relationship| relationship.id.as_str())
             .collect();
         for entity in &graph_data.entities {
             if entity.context != graph_data.context {
@@ -1445,26 +1550,296 @@ impl GraphStorage for FalkorDbStorage {
             if relationship.context != graph_data.context {
                 return Err(StorageError::InvalidContext);
             }
-            if !entity_ids.contains(relationship.from.as_str())
-                || !entity_ids.contains(relationship.to.as_str())
+            if !incoming_entity_ids.contains(relationship.from.as_str())
+                || !incoming_entity_ids.contains(relationship.to.as_str())
             {
                 return Err(StorageError::Query(
                     "graph relationship references an entity absent from the code graph".to_owned(),
                 ));
             }
         }
-        for entity in &graph_data.entities {
+
+        // Resolve fresh extraction IDs through the persisted per-snapshot
+        // identity map before writing. This preserves the CodeEntity IDs that
+        // TIE and saved ChIE investigations already reference.
+        let mut existing_entity_rows = graph
+            .ro_query(
+                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) RETURN n.id AS id, coalesce(n.identity_key, '') AS identity_key, n.kind AS kind, n.name AS name, n.path AS path, n.line AS line",
+            )
+            .with_param("workspace", graph_data.context.workspace_id.clone())
+            .with_param("repository", graph_data.context.repository_id.clone())
+            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
+            .with_param("graph_version", graph_data.context.graph_version.clone())
+            .with_timeout(self.query_timeout_ms)
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut exact_entity_ids = HashMap::<String, String>::new();
+        let mut legacy_entity_ids = HashMap::<String, Vec<String>>::new();
+        while let Some(row) = existing_entity_rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            let id: String = row
+                .try_get("id")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let identity_key: String = row
+                .try_get("identity_key")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let kind: String = row
+                .try_get("kind")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let name: String = row
+                .try_get("name")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let path: String = row
+                .try_get("path")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let line: i64 = row
+                .try_get("line")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            if !identity_key.is_empty() {
+                if exact_entity_ids.insert(identity_key, id).is_some() {
+                    return Err(StorageError::Query(
+                        "persisted CoIE identity map contains duplicate entity keys".to_owned(),
+                    ));
+                }
+            } else {
+                legacy_entity_ids
+                    .entry(legacy_code_entity_identity_key(&kind, &path, &name, line))
+                    .or_default()
+                    .push(id);
+            }
+        }
+
+        let mut canonical_graph = graph_data.clone();
+        let mut incoming_legacy_counts = HashMap::<String, usize>::new();
+        for entity in &canonical_graph.entities {
+            *incoming_legacy_counts
+                .entry(legacy_code_entity_identity_key(
+                    &format!("{:?}", entity.kind),
+                    &entity.path,
+                    &entity.name,
+                    entity.line as i64,
+                ))
+                .or_default() += 1;
+        }
+        let mut entity_id_map = HashMap::<String, String>::new();
+        let mut used_entity_ids = HashSet::<String>::new();
+        for entity in &mut canonical_graph.entities {
+            let original_id = entity.id.clone();
+            let exact_key = code_entity_identity_key(entity);
+            let legacy_key = legacy_code_entity_identity_key(
+                &format!("{:?}", entity.kind),
+                &entity.path,
+                &entity.name,
+                entity.line as i64,
+            );
+            let persisted_id = exact_entity_ids.get(&exact_key).cloned().or_else(|| {
+                if incoming_legacy_counts.get(&legacy_key) == Some(&1) {
+                    legacy_entity_ids
+                        .get(&legacy_key)
+                        .filter(|ids| ids.len() == 1)
+                        .and_then(|ids| ids.first())
+                        .cloned()
+                } else {
+                    None
+                }
+            });
+            let canonical_id = persisted_id.unwrap_or_else(|| original_id.clone());
+            if !used_entity_ids.insert(canonical_id.clone()) {
+                return Err(StorageError::Query(
+                    "persisted CoIE identity mapping resolved multiple entities to one ID"
+                        .to_owned(),
+                ));
+            }
+            entity_id_map.insert(original_id, canonical_id.clone());
+            entity.id = canonical_id;
+        }
+
+        for relationship in &mut canonical_graph.relationships {
+            relationship.from = entity_id_map
+                .get(&relationship.from)
+                .cloned()
+                .ok_or_else(|| {
+                    StorageError::Query(
+                        "CoIE relationship source is missing from the canonical identity map"
+                            .to_owned(),
+                    )
+                })?;
+            relationship.to = entity_id_map
+                .get(&relationship.to)
+                .cloned()
+                .ok_or_else(|| {
+                    StorageError::Query(
+                        "CoIE relationship target is missing from the canonical identity map"
+                            .to_owned(),
+                    )
+                })?;
+        }
+
+        // Reuse relationship IDs as well. This keeps evidence and other
+        // persisted references stable when the same snapshot is ingested again.
+        let mut existing_relationship_rows = graph
+            .ro_query(
+                "MATCH (:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->(:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE type(r) IN ['HAS_SNAPSHOT', 'CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS'] RETURN r.id AS id, coalesce(r.identity_key, '') AS identity_key, r.kind AS kind, r.from_id AS from_id, r.to_id AS to_id, coalesce(r.evidence_path, '') AS evidence_path, coalesce(r.evidence_start_line, 0) AS start_line, coalesce(r.evidence_end_line, 0) AS end_line",
+            )
+            .with_param("workspace", graph_data.context.workspace_id.clone())
+            .with_param("repository", graph_data.context.repository_id.clone())
+            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
+            .with_param("graph_version", graph_data.context.graph_version.clone())
+            .with_timeout(self.query_timeout_ms)
+            .execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        let mut exact_relationship_ids = HashMap::<String, String>::new();
+        let mut legacy_relationship_ids = HashMap::<String, Vec<String>>::new();
+        while let Some(row) = existing_relationship_rows.data.next().await {
+            let row = row.map_err(|error| StorageError::Query(error.to_string()))?;
+            let id: String = row
+                .try_get("id")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let identity_key: String = row
+                .try_get("identity_key")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let kind: String = row
+                .try_get("kind")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let from: String = row
+                .try_get("from_id")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let to: String = row
+                .try_get("to_id")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let evidence_path: String = row
+                .try_get("evidence_path")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let start_line: i64 = row
+                .try_get("start_line")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            let end_line: i64 = row
+                .try_get("end_line")
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            if !identity_key.is_empty() {
+                if exact_relationship_ids.insert(identity_key, id).is_some() {
+                    return Err(StorageError::Query(
+                        "persisted CoIE identity map contains duplicate relationship keys"
+                            .to_owned(),
+                    ));
+                }
+            } else {
+                legacy_relationship_ids
+                    .entry(legacy_code_relationship_identity_key(
+                        &kind,
+                        &from,
+                        &to,
+                        &evidence_path,
+                        start_line,
+                        end_line,
+                    ))
+                    .or_default()
+                    .push(id);
+            }
+        }
+
+        let mut incoming_legacy_relationship_counts = HashMap::<String, usize>::new();
+        for relationship in &canonical_graph.relationships {
+            let legacy_key = legacy_code_relationship_identity_key(
+                &format!("{:?}", relationship.kind),
+                &relationship.from,
+                &relationship.to,
+                relationship
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.path.as_str())
+                    .unwrap_or_default(),
+                relationship
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.start_line as i64)
+                    .unwrap_or_default(),
+                relationship
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.end_line as i64)
+                    .unwrap_or_default(),
+            );
+            *incoming_legacy_relationship_counts
+                .entry(legacy_key)
+                .or_default() += 1;
+        }
+        let mut used_relationship_ids = HashSet::<String>::new();
+        let mut relationship_occurrences = HashMap::<String, usize>::new();
+        for relationship in &mut canonical_graph.relationships {
+            let original_id = relationship.id.clone();
+            let base_key = code_relationship_identity_key(relationship, 0);
+            let occurrence = relationship_occurrences.entry(base_key.clone()).or_default();
+            let exact_key = code_relationship_identity_key(relationship, *occurrence);
+            *occurrence += 1;
+            let legacy_key = legacy_code_relationship_identity_key(
+                &format!("{:?}", relationship.kind),
+                &relationship.from,
+                &relationship.to,
+                relationship
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.path.as_str())
+                    .unwrap_or_default(),
+                relationship
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.start_line as i64)
+                    .unwrap_or_default(),
+                relationship
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.end_line as i64)
+                    .unwrap_or_default(),
+            );
+            let persisted_id = exact_relationship_ids
+                .get(&exact_key)
+                .cloned()
+                .or_else(|| {
+                    if incoming_legacy_relationship_counts.get(&legacy_key) == Some(&1) {
+                        legacy_relationship_ids
+                            .get(&legacy_key)
+                            .filter(|ids| ids.len() == 1)
+                            .and_then(|ids| ids.first())
+                            .cloned()
+                    } else {
+                        None
+                    }
+                });
+            let canonical_id = persisted_id.unwrap_or_else(|| original_id.clone());
+            if !used_relationship_ids.insert(canonical_id.clone()) {
+                return Err(StorageError::Query(
+                    "persisted CoIE relationship mapping resolved multiple relationships to one ID"
+                        .to_owned(),
+                ));
+            }
+            relationship.id = canonical_id;
+        }
+
+        let entity_ids: HashSet<&str> = canonical_graph
+            .entities
+            .iter()
+            .map(|entity| entity.id.as_str())
+            .collect();
+        let relationship_ids: HashSet<&str> = canonical_graph
+            .relationships
+            .iter()
+            .map(|relationship| relationship.id.as_str())
+            .collect();
+
+        for entity in &canonical_graph.entities {
             let merge_key = crate::graph_storage::falkordb::write::stable_merge_key(
                 &entity.id,
                 &entity.context.workspace_id,
                 &entity.context.source_snapshot_id,
             )
             .map_err(StorageError::Query)?;
+            let identity_key = code_entity_identity_key(entity);
             graph
                 .query(
-                    "MERGE (n:CodeEntity {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) SET n.kind = $kind, n.name = $name, \
-                 n.path = $path, n.line = $line, n.workspace_id = $workspace, \
-                 n.repository_id = $repository, n.snapshot_id = $snapshot, n.graph_version = $graph_version,                  n.resolution = $resolution, n.evidence_path = $evidence_path, n.evidence_start_line = $evidence_start_line,                  n.evidence_end_line = $evidence_end_line, n.evidence_snapshot_id = $evidence_snapshot_id, n.evidence_provenance = $evidence_provenance, n.merge_key = $merge_key",
+                    "MERGE (n:CodeEntity {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) SET n.kind = $kind, n.name = $name, n.path = $path, n.line = $line, n.workspace_id = $workspace, n.repository_id = $repository, n.snapshot_id = $snapshot, n.graph_version = $graph_version, n.resolution = $resolution, n.evidence_path = $evidence_path, n.evidence_start_line = $evidence_start_line, n.evidence_end_line = $evidence_end_line, n.evidence_snapshot_id = $evidence_snapshot_id, n.evidence_provenance = $evidence_provenance, n.merge_key = $merge_key, n.identity_key = $identity_key",
                 )
                 .with_param("id", entity.id.clone())
                 .with_param("kind", format!("{:?}", entity.kind))
@@ -1476,21 +1851,30 @@ impl GraphStorage for FalkorDbStorage {
                 .with_param("snapshot", entity.context.source_snapshot_id.clone())
                 .with_param("graph_version", entity.context.graph_version.clone())
                 .with_param("merge_key", merge_key)
+                .with_param("identity_key", identity_key)
                 .with_param("resolution", format!("{:?}", entity.resolution))
                 .with_param("evidence_path", entity.evidence.as_ref().map(|e| e.path.clone()).unwrap_or_default())
                 .with_param("evidence_start_line", entity.evidence.as_ref().map(|e| e.start_line as i64).unwrap_or(0))
                 .with_param("evidence_end_line", entity.evidence.as_ref().map(|e| e.end_line as i64).unwrap_or(0))
                 .with_param("evidence_snapshot_id", entity.evidence.as_ref().map(|e| e.snapshot_id.clone()).unwrap_or_default())
                 .with_param("evidence_provenance", entity.evidence.as_ref().map(|e| e.provenance.clone()).unwrap_or_default())
-                .with_timeout(self.query_timeout_ms).execute()
+                .with_timeout(self.query_timeout_ms)
+                .execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
         }
-        for relationship in &graph_data.relationships {
+
+        let mut write_relationship_occurrences = HashMap::<String, usize>::new();
+        for relationship in &canonical_graph.relationships {
             let relationship_type = relationship_type(&relationship.kind);
+            let base_key = code_relationship_identity_key(relationship, 0);
+            let occurrence = write_relationship_occurrences
+                .entry(base_key)
+                .or_default();
+            let identity_key = code_relationship_identity_key(relationship, *occurrence);
+            *occurrence += 1;
             let query = format!(
-                "MATCH (a:CodeEntity {{id: $from, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}), (b:CodeEntity {{id: $to, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}) \
-                 MERGE (a)-[r:{relationship_type} {{id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}]->(b) SET r.kind = $kind, r.from_id = $from_id, r.to_id = $to_id, r.resolution = $resolution, r.evidence_path = $evidence_path, r.evidence_start_line = $evidence_start_line, r.evidence_end_line = $evidence_end_line, r.evidence_snapshot_id = $evidence_snapshot_id, r.evidence_provenance = $evidence_provenance"
+                "MATCH (a:CodeEntity {{id: $from, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}), (b:CodeEntity {{id: $to, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}) MERGE (a)-[r:{relationship_type} {{id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}}]->(b) SET r.kind = $kind, r.from_id = $from_id, r.to_id = $to_id, r.resolution = $resolution, r.evidence_path = $evidence_path, r.evidence_start_line = $evidence_start_line, r.evidence_end_line = $evidence_end_line, r.evidence_snapshot_id = $evidence_snapshot_id, r.evidence_provenance = $evidence_provenance, r.identity_key = $identity_key"
             );
             graph
                 .query(query)
@@ -1510,7 +1894,7 @@ impl GraphStorage for FalkorDbStorage {
                     relationship
                         .evidence
                         .as_ref()
-                        .map(|e| e.path.clone())
+                        .map(|evidence| evidence.path.clone())
                         .unwrap_or_default(),
                 )
                 .with_param(
@@ -1518,7 +1902,7 @@ impl GraphStorage for FalkorDbStorage {
                     relationship
                         .evidence
                         .as_ref()
-                        .map(|e| e.start_line as i64)
+                        .map(|evidence| evidence.start_line as i64)
                         .unwrap_or(0),
                 )
                 .with_param(
@@ -1526,7 +1910,7 @@ impl GraphStorage for FalkorDbStorage {
                     relationship
                         .evidence
                         .as_ref()
-                        .map(|e| e.end_line as i64)
+                        .map(|evidence| evidence.end_line as i64)
                         .unwrap_or(0),
                 )
                 .with_param(
@@ -1534,7 +1918,7 @@ impl GraphStorage for FalkorDbStorage {
                     relationship
                         .evidence
                         .as_ref()
-                        .map(|e| e.snapshot_id.clone())
+                        .map(|evidence| evidence.snapshot_id.clone())
                         .unwrap_or_default(),
                 )
                 .with_param(
@@ -1542,42 +1926,49 @@ impl GraphStorage for FalkorDbStorage {
                     relationship
                         .evidence
                         .as_ref()
-                        .map(|e| e.provenance.clone())
+                        .map(|evidence| evidence.provenance.clone())
                         .unwrap_or_default(),
                 )
+                .with_param("identity_key", identity_key)
                 .with_timeout(self.query_timeout_ms)
                 .execute()
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
         }
+
         // Reconcile only after every incoming entity and relationship has been
         // persisted successfully. A failed MERGE must never delete facts from
         // the last complete projection for this immutable snapshot context.
+        // Retain stale CodeEntity nodes that are still referenced by TIE or
+        // saved ChIE records: this writer does not rebuild those cross-domain
+        // relationships, and deleting the node would destroy saved evidence.
         graph
             .query(
-                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE NOT n.id IN $entity_ids DETACH DELETE n",
+                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE NOT n.id IN $entity_ids AND NOT (n)-[:TARGETS]-() AND NOT (n)-[:DECLARED_BY]-() AND NOT (n)-[:AFFECTS]-() AND NOT (n)-[:RECOMMENDS]-() DETACH DELETE n",
             )
-            .with_param("workspace", graph_data.context.workspace_id.clone())
-            .with_param("repository", graph_data.context.repository_id.clone())
-            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
-            .with_param("graph_version", graph_data.context.graph_version.clone())
+            .with_param("workspace", canonical_graph.context.workspace_id.clone())
+            .with_param("repository", canonical_graph.context.repository_id.clone())
+            .with_param("snapshot", canonical_graph.context.source_snapshot_id.clone())
+            .with_param("graph_version", canonical_graph.context.graph_version.clone())
             .with_param("entity_ids", entity_ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>())
-            .with_timeout(self.query_timeout_ms).execute()
+            .with_timeout(self.query_timeout_ms)
+            .execute()
             .await
             .map_err(|error| StorageError::Query(error.to_string()))?;
         graph
             .query(
                 "MATCH (:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->(:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE type(r) IN ['HAS_SNAPSHOT', 'CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS'] AND NOT r.id IN $relationship_ids DELETE r",
             )
-            .with_param("workspace", graph_data.context.workspace_id.clone())
-            .with_param("repository", graph_data.context.repository_id.clone())
-            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
-            .with_param("graph_version", graph_data.context.graph_version.clone())
+            .with_param("workspace", canonical_graph.context.workspace_id.clone())
+            .with_param("repository", canonical_graph.context.repository_id.clone())
+            .with_param("snapshot", canonical_graph.context.source_snapshot_id.clone())
+            .with_param("graph_version", canonical_graph.context.graph_version.clone())
             .with_param("relationship_ids", relationship_ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>())
-                        .with_timeout(self.query_timeout_ms).execute()
+            .with_timeout(self.query_timeout_ms)
+            .execute()
             .await
             .map_err(|error| StorageError::Query(error.to_string()))?;
-        Ok(())
+        Ok(canonical_graph)
     }
 
     async fn mutate_code_graph(

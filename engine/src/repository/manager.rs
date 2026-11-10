@@ -142,6 +142,7 @@ impl<S> RepositoryManager<S>
 where
     S: GraphStorage + 'static,
 {
+    /// Create a repository manager using the default repository lifecycle options.
     pub fn new(
         storage: Arc<S>,
         paths: CodeMindPaths,
@@ -157,6 +158,7 @@ where
         )
     }
 
+    /// Create a repository manager with explicitly configured lifecycle options.
     pub fn with_options(
         storage: Arc<S>,
         paths: CodeMindPaths,
@@ -175,6 +177,7 @@ where
         }
     }
 
+    /// Return the filesystem paths managed by this repository manager.
     pub fn paths(&self) -> &CodeMindPaths {
         &self.paths
     }
@@ -1593,8 +1596,17 @@ where
             Err(error) => {
                 let code = selected_entity_error_code(&error);
                 let message = error.to_string();
-                self.persist_operation_failure(operation, STAGE, code, &message)
-                    .await?;
+                if let Err(persist_error) = self
+                    .persist_operation_failure(operation, STAGE, code, &message)
+                    .await
+                {
+                    tracing::error!(
+                        operation_id = %operation.record.operation_id,
+                        selection_error = %error,
+                        persistence_error = %persist_error,
+                        "could not persist operation failure after selected-entity resolution failed"
+                    );
+                }
                 Err(error)
             }
         }

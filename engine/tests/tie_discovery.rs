@@ -38,6 +38,10 @@ const cases = [["one", 1], ["two", 2]];
 test.each(cases).forEach(([name, value]) => {
     test(name, () => expect(value).toBeDefined());
 });
+
+test.each(cases).bind(test)("bound %s", (value) => {
+    expect(value).toBeDefined();
+});
 "#;
     fs::write(root.path().join("parameterized.test.js"), source).unwrap();
     fs::write(root.path().join("parameterized.test.ts"), source).unwrap();
@@ -57,11 +61,11 @@ test.each(cases).forEach(([name, value]) => {
         .count();
 
     // Each language contributes one describe.each suite, one test.each test,
-    // and one regular test inside the forEach callback. The test.each factory
-    // expression itself must not become an extra test node.
+    // one regular test inside the forEach callback, and one bound test.each
+    // declaration. Factory and bind wrapper calls must not become extra nodes.
     assert_eq!(suites, 2);
-    assert_eq!(declarations, 4);
-    assert_eq!(tests.len(), 6);
+    assert_eq!(declarations, 6);
+    assert_eq!(tests.len(), 8);
     assert_generated_tie_ids_are_sha256(&tests, &relationships);
     graph_builder::validate(&tests, &relationships)
         .expect("TIE declarations from chained APIs must have unique IDs and valid endpoints");

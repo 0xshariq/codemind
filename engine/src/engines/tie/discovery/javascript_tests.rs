@@ -4,6 +4,7 @@ use super::{
 };
 use crate::engines::tie::model::{TestNodeKind, TestStatus};
 
+/// Discover supported Jest/Vitest declarations in JavaScript source text.
 pub fn discover(source: &str) -> std::io::Result<Vec<TestDeclaration>> {
     let tree = parse_tree(crate::source::Language::JavaScript, source)?;
     let mut declarations = Vec::new();
@@ -102,6 +103,7 @@ fn strip_literal(value: &str) -> String {
         .to_owned()
 }
 
+/// Return whether JavaScript source contains at least one supported test declaration.
 pub fn is_test_declaration(source: &str) -> bool {
     discover(source)
         .map(|items| items.iter().any(|item| item.kind == TestNodeKind::Test))

@@ -1,9 +1,13 @@
 use codemind_engine::{
-    engines::coie::{CoieEngine, EntityKind, RelationshipKind, graph_builder},
+    contract::context::RepositoryContext,
+    engines::coie::{
+        CoieEngine, EntityKind, GraphRelationship, RelationshipKind, ResolutionStatus,
+        graph_builder, queries::{paths, relationships},
+    },
     repository::RepositoryIdentity,
     source::SourceProvider,
 };
-use std::fs;
+use std::{collections::HashSet, fs};
 
 #[test]
 fn extraction_preserves_source_context_and_relationships() {
@@ -58,6 +62,18 @@ fn repeated_resolution_preserves_canonical_snapshot_and_mints_fresh_graph_ids() 
     );
     graph_builder::validate_detailed(&first_graph).unwrap();
     graph_builder::validate_detailed(&second_graph).unwrap();
+    let first_entity_ids: HashSet<_> = first_graph
+        .entities
+        .iter()
+        .map(|entity| entity.id.as_str())
+        .collect();
+    assert!(
+        second_graph
+            .entities
+            .iter()
+            .all(|entity| !first_entity_ids.contains(entity.id.as_str())),
+        "repeated extraction must mint fresh graph entity IDs"
+    );
     assert!(
         first_graph
             .entities
@@ -114,4 +130,87 @@ fn stable_remote_identity_keeps_repository_and_snapshot_across_checkout_paths() 
     let second_graph = CoieEngine.extract(&second).unwrap();
     graph_builder::validate_detailed(&first_graph).unwrap();
     graph_builder::validate_detailed(&second_graph).unwrap();
+}
+
+
+fn query_context(workspace_id: &str) -> RepositoryContext {
+    RepositoryContext {
+        repository_id: "repo".into(),
+        workspace_id: workspace_id.into(),
+        source_snapshot_id: "snapshot".into(),
+        graph_version: "v1".into(),
+    }
+}
+
+fn query_edge(
+    context: &RepositoryContext,
+    id: &str,
+    from: &str,
+    to: &str,
+) -> GraphRelationship {
+    GraphRelationship {
+        id: id.into(),
+        kind: RelationshipKind::Calls,
+        from: from.into(),
+        to: to.into(),
+        context: context.clone(),
+        resolution: ResolutionStatus::Resolved,
+        evidence: None,
+    }
+}
+
+#[test]
+fn bounded_relationship_query_reports_truncation_and_excludes_foreign_context() {
+    let requested = query_context("workspace-a");
+    let foreign = query_context("workspace-b");
+    let relationships = vec![
+        query_edge(&requested, "a-1", "root", "child"),
+        query_edge(&requested, "a-2", "child", "leaf"),
+        query_edge(&foreign, "b-1", "root", "foreign"),
+    ];
+
+    let result = relationships::bounded_for_context(&relationships, &requested, 1);
+
+    assert_eq!(result.data.len(), 1);
+    assert_eq!(result.data[0].id, "a-1");
+    assert_eq!(result.completeness, codemind_engine::contract::result::Completeness::Truncated);
+    assert_eq!(result.outcome, codemind_engine::contract::result::Outcome::Partial);
+    assert!(result.limitations.iter().any(|item| item.contains("truncated")));
+    assert!(
+        result.diagnostics.iter().any(|item| item.contains("incompatible context")),
+        "foreign-context exclusion must be visible in diagnostics"
+    );
+    assert!(result.data.iter().all(|edge| edge.context == requested));
+}
+
+#[test]
+fn bounded_outgoing_respects_zero_and_positive_depth_after_context_filtering() {
+    let requested = query_context("workspace-a");
+    let foreign = query_context("workspace-b");
+    let relationships = vec![
+        query_edge(&requested, "a-1", "root", "child"),
+        query_edge(&requested, "a-2", "child", "leaf"),
+        query_edge(&foreign, "b-1", "root", "foreign"),
+    ];
+    let scoped = relationships::bounded_for_context(&relationships, &requested, 10);
+    assert!(scoped.data.iter().all(|edge| edge.context == requested));
+
+    assert!(
+        paths::bounded_outgoing(&scoped.data, "root", 0).is_empty(),
+        "depth zero must not traverse outgoing relationships"
+    );
+
+    let depth_one = paths::bounded_outgoing(&scoped.data, "root", 1);
+    assert_eq!(depth_one.len(), 1);
+    assert_eq!(depth_one[0].id, "a-1");
+
+    let depth_two = paths::bounded_outgoing(&scoped.data, "root", 2);
+    assert_eq!(
+        depth_two.iter().map(|edge| edge.id.as_str()).collect::<HashSet<_>>(),
+        HashSet::from(["a-1", "a-2"])
+    );
+    assert!(
+        depth_two.iter().all(|edge| edge.context == requested),
+        "path traversal must never return relationships from another workspace"
+    );
 }

@@ -357,12 +357,10 @@ pub async fn run_remote_repository(case: RemoteRepositoryCase) {
         case.slug
     );
     assert!(
-        history_entities.iter().any(|entity| matches!(
-            &entity.data,
-            HistoryEntityData::Commit { commit_id, .. }
-                if commit_id.eq_ignore_ascii_case(&indexed.head_commit)
-        )),
-        "{} History Graph does not contain its actual cloned HEAD commit {}",
+        receipt
+            .history_head_commit
+            .eq_ignore_ascii_case(&indexed.head_commit),
+        "{} verified History Graph receipt does not identify the actual cloned HEAD commit {}",
         case.slug,
         indexed.head_commit
     );

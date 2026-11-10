@@ -70,6 +70,7 @@ impl<S> RepositoryIndexPipeline<S>
 where
     S: GraphStorage + 'static,
 {
+    /// Construct the repository index pipeline over the supplied graph storage.
     pub fn new(storage: Arc<S>) -> Self {
         Self {
             storage,
@@ -78,6 +79,7 @@ where
         }
     }
 
+    /// Build, persist and verify the complete repository graph for a prepared source.
     pub async fn run(
         &self,
         prepared: &PreparedRepository,
@@ -95,7 +97,7 @@ where
         }
         .validate(&prepared.snapshot.context)
         .map_err(|error| RepositoryIndexError::Engine(error.to_string()))?;
-        self.storage.write_code_graph(&graph).await?;
+        let graph = self.storage.write_code_graph(&graph).await?;
         self.stage_finish(operation, stages[0]).await?;
 
         self.stage_start(operation, stages[1]).await?;
@@ -225,6 +227,7 @@ where
         })
     }
 
+    /// Apply a verified Git change to the indexed repository when incremental mutation is safe.
     pub async fn run_incremental(
         &self,
         previous_context: &crate::source::RepositoryContext,
@@ -518,6 +521,44 @@ pub(crate) fn stage_order() -> [&'static str; 4] {
 
 #[cfg(test)]
 mod tests {
+    use crate::source::SourceProvider;
+    use std::{fs, path::Path};
+
+    #[test]
+    fn zig_source_without_a_parser_keeps_repository_index_partial() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/main.zig"), "pub fn main() void {}\n").unwrap();
+
+        let snapshot = SourceProvider::default()
+            .resolve(root.path(), "zig-completeness")
+            .expect("capture Zig source file");
+        let zig = snapshot
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path == "src/main.zig")
+            .expect("Zig source must be retained in the manifest");
+
+        assert_eq!(zig.language, None, "no Zig parser is registered");
+        assert_eq!(
+            snapshot.manifest.unsupported_source_file_count(),
+            1,
+            "unparsed Zig source must be counted as an analysis gap"
+        );
+        assert!(!super::repository_index_is_complete(
+            snapshot.manifest.omitted_files.len() as u64,
+            snapshot.manifest.unsupported_source_file_count(),
+            true,
+            0,
+            0
+        ));
+        assert_eq!(
+            crate::source::Language::from_path(Path::new("src/main.zig")),
+            None
+        );
+    }
+
     #[test]
     fn repository_index_stage_order_is_stable() {
         assert_eq!(

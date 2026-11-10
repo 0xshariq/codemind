@@ -19,6 +19,7 @@ use std::{
 pub struct CoieEngine;
 
 impl CoieEngine {
+    /// Build the in-memory CoIE graph for a validated source snapshot.
     pub fn extract(&self, snapshot: &SourceSnapshot) -> std::io::Result<CodeGraph> {
         snapshot
             .validate()
@@ -589,6 +590,7 @@ impl CoieEngine {
         }
     }
 
+    /// Extract and persist a CoIE graph, returning counts for its canonical projection.
     pub async fn ingest<S: GraphStorage>(
         &self,
         snapshot: &SourceSnapshot,
@@ -598,7 +600,7 @@ impl CoieEngine {
             .extract(snapshot)
             .map_err(|error| StorageError::Query(error.to_string()))?;
 
-        storage.write_code_graph(&graph).await?;
+        let graph = storage.write_code_graph(&graph).await?;
 
         Ok(GraphBuildReport::from_graph(&graph))
     }

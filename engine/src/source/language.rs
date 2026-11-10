@@ -42,6 +42,7 @@ impl Language {
         }
     }
 
+    /// Classify a supported parser extension without inspecting file contents.
     pub fn supported_extension(extension: &OsStr) -> Option<Self> {
         let extension = extension.to_str()?;
         match extension.to_ascii_lowercase().as_str() {

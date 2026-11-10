@@ -61,6 +61,20 @@ pub(crate) fn callable_path(
 ) -> Option<(String, bool)> {
     let (path_node, is_factory_call) = if function.kind() == "call_expression" {
         (function.child_by_field_name("function")?, true)
+    } else if function.kind() == "member_expression" {
+        let object = function.child_by_field_name("object")?;
+        let property = function.child_by_field_name("property")?;
+        let property_name = node_text(property, source)?;
+        if property_name == "bind" && object.kind() == "call_expression" {
+            let (factory_path, is_factory) = callable_path(object, source)?;
+            if is_factory {
+                // `test.each(table).bind(test)(...)` remains a parameterized
+                // test invocation. The bind wrapper changes the receiver, not
+                // the underlying declaration API.
+                return Some((factory_path, true));
+            }
+        }
+        (function, false)
     } else {
         (function, false)
     };

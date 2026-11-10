@@ -14,6 +14,7 @@ pub struct TestGraph {
     pub relationships: Vec<TestRelationship>,
 }
 
+/// Assemble discovered TIE entities and relationships into their canonical graph value.
 pub fn graph(tests: Vec<TestEntity>, relationships: Vec<TestRelationship>) -> TestGraph {
     TestGraph {
         tests,
@@ -25,6 +26,7 @@ pub fn graph(tests: Vec<TestEntity>, relationships: Vec<TestRelationship>) -> Te
 pub struct TieEngine;
 
 impl TieEngine {
+    /// Discover static test declarations and their source-level relationships.
     pub fn discover(
         &self,
         snapshot: &SourceSnapshot,
@@ -225,10 +227,7 @@ impl TieEngine {
                     continue;
                 }
                 let short = call.callee.rsplit('.').next().unwrap_or(&call.callee);
-                if matches!(short, "test" | "it" | "describe")
-                    || call.callee.contains("test.each")
-                    || call.callee.contains("it.each")
-                {
+                if is_test_framework_invocation(&call.callee) {
                     continue;
                 }
                 let test_id = ids_by_declaration
@@ -284,3 +283,129 @@ fn relationship_id(generator: &mut RandomIdGenerator, kind: TestRelationshipKind
     };
     generator.next("tie-edge", domain)
 }
+
+/// Identify supported Jest/Vitest declaration and suite calls by exact path
+/// segments, leaving unrelated callees such as `contest.each` untouched.
+fn is_test_framework_invocation(callee: &str) -> bool {
+    let Some(segments) = callable_path_segments(callee) else {
+        return false;
+    };
+    let Some(root) = segments.first() else {
+        return false;
+    };
+    if !matches!(*root, "test" | "it" | "describe") {
+        return false;
+    }
+
+    segments[1..].iter().all(|segment| {
+        matches!(
+            *segment,
+            "only" | "skip" | "concurrent" | "todo" | "each" | "bind"
+        )
+    })
+}
+
+/// Parse the identifier/member chain from a Tree-sitter callee expression,
+/// skipping complete call argument groups. This distinguishes
+/// `test.each(rows).bind(test)` from `test.each(rows).forEach(...)`.
+fn callable_path_segments(expression: &str) -> Option<Vec<&str>> {
+    let bytes = expression.as_bytes();
+    let mut cursor = 0;
+    let mut segments = Vec::new();
+
+    fn identifier_end(bytes: &[u8], start: usize) -> Option<usize> {
+        let first = *bytes.get(start)?;
+        if !(first == b'_' || first == b'$' || first.is_ascii_alphabetic()) {
+            return None;
+        }
+        let mut end = start + 1;
+        while bytes
+            .get(end)
+            .is_some_and(|byte| *byte == b'_' || *byte == b'$' || byte.is_ascii_alphanumeric())
+        {
+            end += 1;
+        }
+        Some(end)
+    }
+
+    fn skip_arguments(bytes: &[u8], start: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut quote = None;
+        let mut escaped = false;
+        for (offset, byte) in bytes.iter().enumerate().skip(start) {
+            if let Some(active_quote) = quote {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == active_quote {
+                    quote = None;
+                }
+                continue;
+            }
+            match *byte {
+                b'\'' | b'"' | b'`' => quote = Some(*byte),
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(offset + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    cursor = identifier_end(bytes, cursor)?;
+    segments.push(&expression[..cursor]);
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'.' => {
+                let start = cursor + 1;
+                let end = identifier_end(bytes, start)?;
+                segments.push(&expression[start..end]);
+                cursor = end;
+            }
+            b'(' => cursor = skip_arguments(bytes, cursor)?,
+            _ => return None,
+        }
+    }
+    Some(segments)
+}
+
+#[cfg(test)]
+mod call_classification_tests {
+    use super::is_test_framework_invocation;
+
+    #[test]
+    fn excludes_only_exact_test_and_suite_callable_paths() {
+        for path in [
+            "test",
+            "it",
+            "describe",
+            "test.each",
+            "it.each",
+            "test.only.each",
+            "describe.skip",
+            "test.each.bind",
+            "test.each(rows).bind(test)",
+        ] {
+            assert!(is_test_framework_invocation(path), "{path}");
+        }
+
+        for path in [
+            "contest.each",
+            "latest.each",
+            "test.each.forEach",
+            "test.each(rows).forEach(callback)",
+            "my_test.each",
+            "helper.test.each",
+        ] {
+            assert!(!is_test_framework_invocation(path), "{path}");
+        }
+    }
+}
+

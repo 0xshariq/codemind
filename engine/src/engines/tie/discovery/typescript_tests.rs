@@ -4,10 +4,12 @@ use super::{
 };
 use crate::engines::tie::model::{TestNodeKind, TestStatus};
 
+/// Discover supported Jest/Vitest declarations in TypeScript source text.
 pub fn discover(source: &str) -> std::io::Result<Vec<TestDeclaration>> {
     discover_for(crate::source::Language::TypeScript, source)
 }
 
+/// Discover test declarations using the requested TypeScript or TSX grammar.
 pub fn discover_for(
     language: crate::source::Language,
     source: &str,
@@ -119,6 +121,7 @@ fn strip_literal(value: &str) -> String {
         .to_owned()
 }
 
+/// Return whether TypeScript source contains at least one supported test declaration.
 pub fn is_test_declaration(source: &str) -> bool {
     discover(source)
         .map(|items| items.iter().any(|item| item.kind == TestNodeKind::Test))
