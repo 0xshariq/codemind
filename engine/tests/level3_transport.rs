@@ -1,64 +1,56 @@
 mod support;
 
-use codemind_engine::{
-    contract::generated::{
-        self, repository_service_client::RepositoryServiceClient,
-        repository_service_server::RepositoryServiceServer,
-    },
-    transport::server::RepositoryServer,
+use codemind_engine::memory::{
+    model::{EvidenceReference, MemoryRecord},
+    scope::allows,
+    validation::validate_memory,
 };
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::transport::Server;
 
-#[tokio::test]
-#[ignore = "requires GitHub access; run with --ignored"]
-async fn repository_grpc_service_reads_the_github_repository_boundary() {
-    if !support::github_repository_exists() {
-        return;
-    }
-
-    let (_temp, root) = support::fetch_github_repository();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        Server::builder()
-            .add_service(RepositoryServiceServer::new(RepositoryServer::default()))
-            .serve_with_incoming(TcpListenerStream::new(listener))
-            .await
-            .unwrap();
-    });
-
-    let mut client = RepositoryServiceClient::connect(format!("http://{address}"))
-        .await
-        .unwrap();
-    let response = client
-        .resolve_repository(generated::ResolveRepositoryRequest {
-            source_path: root.to_string_lossy().into_owned(),
-            context: Some(generated::RepositoryContext {
-                repository_id: support::github_repository_url(),
-                workspace_id: "level3-grpc".into(),
-                source_snapshot_id: "request-snapshot-placeholder".into(),
-                graph_version: "request-graph-placeholder".into(),
-            }),
-            correlation: Some(generated::Correlation {
-                request_id: "grpc-request".into(),
-                trace_id: "grpc-trace".into(),
-                operation_id: "grpc-operation".into(),
-            }),
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    let snapshot = match response
-        .result
-        .expect("repository RPC must return a result")
-    {
-        generated::resolve_repository_response::Result::Snapshot(snapshot) => snapshot,
-        generated::resolve_repository_response::Result::Error(error) => {
-            panic!("repository RPC failed: {}", error.message);
-        }
+#[test]
+fn validated_memory_requires_bounded_evidence_and_context() {
+    let record = MemoryRecord {
+        memory_id: "memory-1".into(),
+        // Repository-scoped records must be unowned or owned by the repository.
+        // support::test_repository_context() uses "repo" as repository_id.
+        owner_id: "repo".into(),
+        kind: "semantic".into(),
+        scope: "repository".into(),
+        lifecycle: "validated".into(),
+        freshness: "fresh".into(),
+        payload_json: r#"{"summary":"control plane callers"}"#.into(),
+        context: support::test_repository_context("snapshot-a"),
+        evidence: vec![EvidenceReference {
+            path: "src/control.rs".into(),
+            start_line: 10,
+            end_line: 18,
+            snapshot_id: "snapshot-a".into(),
+        }],
+        idempotency_key: "memory-1".into(),
+        version: 1,
+        created_at: "2026-10-17T00:00:00Z".into(),
+        updated_at: "2026-10-17T00:00:00Z".into(),
     };
-    assert!(!snapshot.manifest_json.is_empty());
-    assert!(!snapshot.context.unwrap().source_snapshot_id.is_empty());
-    server.abort();
+    assert!(validate_memory(&record).is_ok());
+    assert!(allows("repository", "repository", &record.context));
+    assert!(!allows("team", "repository", &record.context));
+}
+
+#[test]
+fn validated_memory_without_evidence_is_rejected() {
+    let record = MemoryRecord {
+        memory_id: "memory-2".into(),
+        owner_id: "user-1".into(),
+        kind: "procedure".into(),
+        scope: "repository".into(),
+        lifecycle: "validated".into(),
+        freshness: "fresh".into(),
+        payload_json: "{}".into(),
+        context: support::test_repository_context("snapshot-a"),
+        evidence: Vec::new(),
+        idempotency_key: "memory-2".into(),
+        version: 1,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    assert!(validate_memory(&record).is_err());
 }

@@ -153,6 +153,7 @@ pub struct GraphVerificationReport {
 }
 
 impl GraphVerificationReport {
+    /// Check whether this verification report satisfies the expected graph contract.
     pub fn satisfies(&self, expected: &GraphVerificationExpectation) -> bool {
         expected.validate().is_ok()
             && self.context == expected.context
@@ -249,7 +250,9 @@ pub trait GraphStorage: Send + Sync + crate::memory::repository::MemoryRepositor
         limit: usize,
     ) -> Result<Vec<EngineEvent>, StorageError>;
 
-    async fn write_code_graph(&self, graph: &CodeGraph) -> Result<(), StorageError>;
+    /// Persist a CoIE projection and return it with storage-canonical entity
+    /// and relationship IDs. Downstream graph domains must consume this value.
+    async fn write_code_graph(&self, graph: &CodeGraph) -> Result<CodeGraph, StorageError>;
 
     /// Apply a bounded commit-to-commit Code Graph update. Only entities and
     /// relationships in `affected_paths` are replaced; unrelated repository

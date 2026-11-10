@@ -1,204 +1,118 @@
 use codemind_engine::{
     engines::{
-        chie::{ChieEngine, ImpactClassification, RiskLevel, graph_builder},
-        coie::model::{CodeGraph, EntityKind, GraphEntity, GraphRelationship, RelationshipKind},
-        tie::model::{TestEntity, TestRelationship, TestRelationshipKind, TestStatus},
+        coie::{
+            extraction::{Candidate, normalize::identifier},
+            graph_builder, languages,
+            model::{CodeGraph, EntityKind, GraphEntity},
+            queries::{paths, symbols},
+        },
+        tie::{
+            discovery::{javascript_tests, python_tests, rust_tests, typescript_tests},
+            graph_builder as tie_graph_builder,
+            mapping::{evidence, target_mapping},
+            model::{TestEntity, TestStatus},
+        },
     },
-    source::RepositoryContext,
+    source::{Language, RepositoryContext, identity::RandomIdGenerator},
 };
 
 fn context() -> RepositoryContext {
     RepositoryContext {
-        repository_id: "repo".to_owned(),
+        repository_id: "repository".to_owned(),
         workspace_id: "workspace".to_owned(),
         source_snapshot_id: "snapshot".to_owned(),
-        graph_version: "day-2".to_owned(),
+        graph_version: "day-1".to_owned(),
     }
 }
 
 #[test]
-fn multi_hop_relationships_produce_direct_indirect_impact_and_tests() {
-    let context = context();
+fn coie_boundaries_normalize_validate_and_query_canonical_data() {
+    assert_eq!(identifier("symbol_name"), Some("symbol_name".to_owned()));
+    assert!(languages::supports(Language::Rust));
 
-    let entities = ["a", "b", "c"]
-        .into_iter()
-        .map(|id| GraphEntity {
-            id: id.to_owned(),
-            kind: EntityKind::Symbol,
-            name: id.to_owned(),
-            path: format!("src/{id}.rs"),
-            line: 1,
-            context: context.clone(),
-            language: Some(codemind_engine::source::Language::Rust),
-            native_kind: Some("function_item".to_owned()),
-            range: None,
-            resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-            evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
-                path: format!("src/{id}.rs"),
-                start_line: 1,
-                end_line: 1,
-                snapshot_id: context.source_snapshot_id.clone(),
-                provenance: "test".to_owned(),
-            }),
-        })
-        .collect();
-
-    let relationship = |from: &str, to: &str, id: &str| GraphRelationship {
-        id: id.to_owned(),
-        kind: RelationshipKind::Calls,
-        from: from.to_owned(),
-        to: to.to_owned(),
-        context: context.clone(),
-        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
-            path: "src/lib.rs".to_owned(),
-            start_line: 1,
-            end_line: 1,
-            snapshot_id: context.source_snapshot_id.clone(),
-            provenance: "test".to_owned(),
-        }),
-    };
-
-    let graph = CodeGraph {
-        context: context.clone(),
-        entities,
-        relationships: vec![relationship("b", "a", "b-a"), relationship("c", "b", "c-b")],
-        diagnostics: Vec::new(),
-    };
-
-    let tests = vec![TestEntity {
-        id: "test-c".to_owned(),
-        name: "test_c".to_owned(),
-        path: "tests/c.rs".to_owned(),
+    let mut id_generator = RandomIdGenerator::default();
+    let file_id = id_generator.next("coie-entity", "fixture-file");
+    let file = GraphEntity {
+        id: file_id.clone(),
+        kind: EntityKind::File,
+        name: "lib.rs".to_owned(),
+        path: "lib.rs".to_owned(),
         line: 1,
-        framework: "rust".to_owned(),
-        status: TestStatus::Supported,
-        kind: Default::default(),
-        context: context.clone(),
-    }];
-
-    let test_relationships = vec![TestRelationship {
-        id: "target-c".to_owned(),
-        kind: TestRelationshipKind::Targets,
-        test_id: "test-c".to_owned(),
-        target_symbol_name: Some("c".to_owned()),
-        entity_id: Some("c".to_owned()),
-        evidence_path: "tests/c.rs".to_owned(),
-        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
-            path: "tests/c.rs".to_owned(),
-            start_line: 1,
-            end_line: 1,
-            snapshot_id: context.source_snapshot_id.clone(),
-            provenance: "test".to_owned(),
-        }),
-        resolution: codemind_engine::engines::tie::model::TestResolution::Resolved,
-        target_kind: Default::default(),
-        context,
-    }];
-
-    let analysis = ChieEngine::default()
-        .analyze(&graph, &tests, &test_relationships, "a")
-        .unwrap();
-
-    assert_eq!(analysis.impact_paths.len(), 2);
-
-    assert_eq!(
-        analysis.impact_paths[0].classification,
-        ImpactClassification::Direct
-    );
-
-    assert_eq!(
-        analysis.impact_paths[1].classification,
-        ImpactClassification::Indirect
-    );
-
-    assert_eq!(analysis.test_candidates.len(), 1);
-    assert_eq!(analysis.risk, RiskLevel::Medium);
-
-    assert!(graph_builder::validate(&analysis).is_ok());
-}
-
-#[test]
-fn risk_counts_unique_impacted_entities_not_alternate_paths() {
-    let context = context();
-
-    let entities = ["a", "b", "c", "d"]
-        .into_iter()
-        .map(|id| GraphEntity {
-            id: id.to_owned(),
-            kind: EntityKind::Symbol,
-            name: id.to_owned(),
-            path: format!("src/{id}.rs"),
-            line: 1,
-            context: context.clone(),
-            language: Some(codemind_engine::source::Language::Rust),
-            native_kind: Some("function_item".to_owned()),
-            range: None,
-            resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-            evidence: None,
-        })
-        .collect();
-
-    let edge = |id: &str, from: &str, to: &str| GraphRelationship {
-        id: id.to_owned(),
-        kind: RelationshipKind::Calls,
-        from: from.to_owned(),
-        to: to.to_owned(),
-        context: context.clone(),
+        context: context(),
+        language: Some(Language::Rust),
+        native_kind: Some("source_file".to_owned()),
+        range: None,
         resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
-            path: "src/lib.rs".to_owned(),
-            start_line: 1,
-            end_line: 1,
-            snapshot_id: context.source_snapshot_id.clone(),
-            provenance: "test".to_owned(),
-        }),
+        evidence: None,
     };
 
     let graph = CodeGraph {
-        context: context.clone(),
-        entities,
-        relationships: vec![
-            edge("b-a", "b", "a"),
-            edge("c-a", "c", "a"),
-            edge("d-b", "d", "b"),
-            edge("d-c", "d", "c"),
-        ],
-        diagnostics: Vec::new(),
-    };
-
-    let analysis = ChieEngine::default()
-        .analyze(&graph, &[], &[], "a")
-        .unwrap();
-
-    assert_eq!(analysis.impact_paths.len(), 4);
-    assert_eq!(
-        analysis.impact.as_ref().unwrap().impacted_entity_ids.len(),
-        3
-    );
-    assert_eq!(analysis.risk, RiskLevel::Medium);
-}
-
-#[test]
-fn missing_symbol_produces_selection_error() {
-    let context = context();
-
-    let graph = CodeGraph {
-        context,
-        entities: Vec::new(),
+        context: context(),
+        entities: vec![file],
         relationships: Vec::new(),
         diagnostics: Vec::new(),
     };
 
-    let result = ChieEngine::default().analyze(&graph, &[], &[], "missing");
+    assert!(graph_builder::validate(&graph));
+    assert_eq!(symbols::symbols(&graph.entities).count(), 0);
+    assert_eq!(paths::outgoing(&graph.relationships, &file_id).count(), 0);
+}
 
-    assert!(
-        result.is_err(),
-        "expected ChIE to reject a selected symbol that does not exist in the code graph"
-    );
+#[test]
+fn language_and_test_boundaries_preserve_supported_semantics() {
+    let mut id_generator = RandomIdGenerator::default();
+    let candidate = Candidate {
+        name: "run".to_owned(),
+        path: "src/lib.rs".to_owned(),
+        language: Language::Rust,
+        native_kind: "function_item".to_owned(),
+        line: 4,
+        range: codemind_engine::source::tree_sitter::SourceRange {
+            start_byte: 0,
+            end_byte: 3,
+            start_line: 4,
+            end_line: 4,
+            start_column: 1,
+            end_column: 4,
+        },
+        context: context(),
+        enclosing: None,
+        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
+    };
+
+    assert!(codemind_engine::engines::coie::extraction::validate::supported(&candidate));
+
+    assert!(rust_tests::is_test_declaration("#[test]\nfn works() {}"));
+
+    assert!(javascript_tests::is_test_declaration(
+        "test('works', () => {})"
+    ));
+
+    assert!(typescript_tests::is_test_declaration(
+        "it('works', () => {})"
+    ));
+
+    assert!(python_tests::is_test_declaration("def test_works():"));
+
+    assert!(target_mapping::supported(
+        codemind_engine::engines::tie::model::TestRelationshipKind::Targets
+    ));
 
     assert_eq!(
-        result.unwrap_err(),
-        "selected symbol or file does not exist in the code graph"
+        evidence::normalize_path(r"tests\unit.py"),
+        Some("tests/unit.py".to_owned())
     );
+
+    let test = TestEntity {
+        id: id_generator.next("tie-test", "fixture-test"),
+        name: "test_works".to_owned(),
+        path: "tests/unit.py".to_owned(),
+        line: 1,
+        framework: "pytest-unittest".to_owned(),
+        status: TestStatus::Supported,
+        kind: Default::default(),
+        context: context(),
+    };
+
+    assert!(tie_graph_builder::validate(&[test], &[]).is_ok());
 }

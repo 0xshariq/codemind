@@ -142,6 +142,7 @@ impl<S> RepositoryManager<S>
 where
     S: GraphStorage + 'static,
 {
+    /// Create a repository manager using the default repository lifecycle options.
     pub fn new(
         storage: Arc<S>,
         paths: CodeMindPaths,
@@ -157,6 +158,7 @@ where
         )
     }
 
+    /// Create a repository manager with explicitly configured lifecycle options.
     pub fn with_options(
         storage: Arc<S>,
         paths: CodeMindPaths,
@@ -175,6 +177,7 @@ where
         }
     }
 
+    /// Return the filesystem paths managed by this repository manager.
     pub fn paths(&self) -> &CodeMindPaths {
         &self.paths
     }
@@ -505,42 +508,40 @@ where
                 crate::engines::pipeline::RepositoryPipelineDecision::Reuse
             ) {
                 let context = context_from_state(&state)?;
-                let selected = match symbol_name {
-                    Some(symbol_name) => {
-                        self.resolve_selected_entity(&context, symbol_name).await?
-                    }
-                    None => String::new(),
-                };
+                // Persist the operation before resolving the caller's selected
+                // symbol. A bad selection is still a failed request and must
+                // have a durable terminal operation record.
                 let mut operation =
                     Operation::new(operation_id, request_id, trace_id, context.clone())
                         .map_err(RepositoryManagerError::Operation)?;
                 self.storage.persist_operation(&operation.record).await?;
-                let event = operation
+                let mut event = operation
                     .begin_stage("repository-reuse")
                     .map_err(RepositoryManagerError::Operation)?;
-                self.storage.persist_operation(&operation.record).await?;
-                self.storage
-                    .append_operation_event(&crate::contract::events::EngineEvent::Progress {
-                        metadata: event.metadata.clone(),
-                        engine: "codemind".to_owned(),
-                        stage: "repository-reuse".to_owned(),
-                        message:
-                            "repository pipeline gate selected reuse; verified knowledge is current"
-                                .to_owned(),
-                    })
+                event.message = Some(
+                    "repository pipeline gate selected reuse; verified knowledge is current"
+                        .to_owned(),
+                );
+                self.persist_operation_progress(&operation, event, "repository-reuse")
                     .await?;
-                let event = operation
+                let mut event = operation
                     .finish_stage("repository-reuse")
                     .map_err(RepositoryManagerError::Operation)?;
-                self.storage.persist_operation(&operation.record).await?;
-                self.storage
-                    .append_operation_event(&crate::contract::events::EngineEvent::Progress {
-                        metadata: event.metadata.clone(),
-                        engine: "codemind".to_owned(),
-                        stage: "repository-reuse".to_owned(),
-                        message: "verified repository knowledge reused".to_owned(),
-                    })
+                event.message = Some("verified repository knowledge reused".to_owned());
+                self.persist_operation_progress(&operation, event, "repository-reuse")
                     .await?;
+
+                let selected = match symbol_name {
+                    Some(symbol_name) => {
+                        self.resolve_selected_entity_for_operation(
+                            &mut operation,
+                            &context,
+                            symbol_name,
+                        )
+                        .await?
+                    }
+                    None => String::new(),
+                };
                 if should_complete_repository_operation(symbol_name) {
                     self.complete_repository_only_operation(&mut operation)
                         .await?;
@@ -1115,8 +1116,12 @@ where
 
         let selected = match symbol_name {
             Some(symbol_name) => {
-                self.resolve_selected_entity(&prepared.snapshot.context, symbol_name)
-                    .await?
+                self.resolve_selected_entity_for_operation(
+                    &mut operation,
+                    &prepared.snapshot.context,
+                    symbol_name,
+                )
+                .await?
             }
             None => String::new(),
         };
@@ -1566,6 +1571,88 @@ where
         }
     }
 
+    async fn resolve_selected_entity_for_operation(
+        &self,
+        operation: &mut Operation,
+        context: &RepositoryContext,
+        symbol_name: &str,
+    ) -> Result<String, RepositoryManagerError> {
+        const STAGE: &str = "repository-selection";
+        let started = operation
+            .begin_stage(STAGE)
+            .map_err(RepositoryManagerError::Operation)?;
+        self.persist_operation_progress(operation, started, STAGE)
+            .await?;
+
+        match self.resolve_selected_entity(context, symbol_name).await {
+            Ok(entity_id) => {
+                let finished = operation
+                    .finish_stage(STAGE)
+                    .map_err(RepositoryManagerError::Operation)?;
+                self.persist_operation_progress(operation, finished, STAGE)
+                    .await?;
+                Ok(entity_id)
+            }
+            Err(error) => {
+                let code = selected_entity_error_code(&error);
+                let message = error.to_string();
+                if let Err(persist_error) = self
+                    .persist_operation_failure(operation, STAGE, code, &message)
+                    .await
+                {
+                    tracing::error!(
+                        operation_id = %operation.record.operation_id,
+                        selection_error = %error,
+                        persistence_error = %persist_error,
+                        "could not persist operation failure after selected-entity resolution failed"
+                    );
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_operation_progress(
+        &self,
+        operation: &Operation,
+        event: crate::lifecycle::operation::OperationEvent,
+        stage: &str,
+    ) -> Result<(), RepositoryManagerError> {
+        self.storage.persist_operation(&operation.record).await?;
+        self.storage
+            .append_operation_event(&crate::contract::events::EngineEvent::Progress {
+                metadata: event.metadata,
+                engine: "codemind".to_owned(),
+                stage: stage.to_owned(),
+                message: event.message.unwrap_or_else(|| "stage updated".to_owned()),
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn persist_operation_failure(
+        &self,
+        operation: &mut Operation,
+        stage: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<(), RepositoryManagerError> {
+        if operation.record.state.is_terminal() {
+            return Ok(());
+        }
+        operation.record.error_code = Some(code.to_owned());
+        operation
+            .transition(crate::contract::operation::OperationState::Failed)
+            .map_err(RepositoryManagerError::Operation)?;
+        operation.record.current_stage = Some(stage.to_owned());
+        let failed = operation
+            .failed_event(code, message)
+            .map_err(RepositoryManagerError::Operation)?;
+        self.storage.persist_operation(&operation.record).await?;
+        self.storage.append_operation_event(&failed).await?;
+        Ok(())
+    }
+
     /// Repository-only resolution has no later ChIE stage to finish its
     /// operation. Mark that operation complete only after graph verification,
     /// durable state publication and any owned-workspace cleanup have finished.
@@ -1824,6 +1911,14 @@ fn history_path_omissions_at_least(commit_omissions: impl IntoIterator<Item = (b
             let lower_bound = if complete { omitted } else { omitted.max(1) };
             total.saturating_add(lower_bound)
         })
+}
+
+fn selected_entity_error_code(error: &RepositoryManagerError) -> &'static str {
+    match error {
+        RepositoryManagerError::SelectedEntityNotFound => "SELECTED_ENTITY_NOT_FOUND",
+        RepositoryManagerError::SelectedEntityAmbiguous => "SELECTED_ENTITY_AMBIGUOUS",
+        _ => "REPOSITORY_SELECTION_FAILED",
+    }
 }
 
 fn should_complete_repository_operation(symbol_name: Option<&str>) -> bool {

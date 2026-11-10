@@ -25,6 +25,8 @@ mod tests {
     #[test]
     fn read_bounds_are_hard_capped_and_never_zero() {
         assert_eq!(bounded_limit(0), 1);
+        assert_eq!(bounded_limit(200), 200);
+        assert_eq!(bounded_limit(500), 500);
         assert_eq!(bounded_limit(usize::MAX), RELATIONSHIP_QUERY_LIMIT);
         assert_eq!(bounded_search_limit(0), 1);
         assert_eq!(bounded_search_limit(usize::MAX), SEARCH_QUERY_LIMIT);

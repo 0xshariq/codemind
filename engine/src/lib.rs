@@ -10,3 +10,5 @@ pub mod memory;
 pub mod repository;
 pub mod source;
 pub mod transport;
+pub mod evidence;
+pub mod developer_integration;

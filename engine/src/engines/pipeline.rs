@@ -17,13 +17,17 @@ use crate::{
     },
     lifecycle::Operation,
     repository::KnowledgeCompleteness,
-    source::{RepositoryContext, SourceProvider, SourceSnapshot},
+    source::{
+        RepositoryContext, SourceProvider, SourceSnapshot,
+        identity::{RandomIdGenerator, derive_sha256_id},
+    },
 };
 use chrono::Utc;
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Request envelope for the compatibility snapshot-based investigation path.
 #[derive(Debug, Clone)]
 pub struct PipelineRequest {
     pub snapshot: SourceSnapshot,
@@ -31,9 +35,15 @@ pub struct PipelineRequest {
     pub request_id: String,
     pub trace_id: String,
     pub operation_id: Option<String>,
+    /// CoIE graph and selected ID produced by the same extraction pass.
+    ///
+    /// Required for the snapshot-based `run` entry point so selection cannot
+    /// refer to IDs from a different extraction of the same snapshot.
+    pub prepared_selection: Option<PreparedSelection>,
 }
 
 impl PipelineRequest {
+    /// Validate the snapshot, selected entity and prepared CoIE extraction contract.
     pub fn validate(&self) -> Result<(), PipelineError> {
         self.snapshot
             .validate()
@@ -46,6 +56,21 @@ impl PipelineRequest {
         if self.request_id.trim().is_empty() || self.trace_id.trim().is_empty() {
             return Err(PipelineError::InvalidInput(
                 "request_id and trace_id are required".to_owned(),
+            ));
+        }
+        let selection = self.prepared_selection.as_ref().ok_or_else(|| {
+            PipelineError::InvalidInput(
+                "snapshot-based run requires a prepared CoIE selection; call prepare_selection first"
+                    .to_owned(),
+            )
+        })?;
+        if selection.context != self.snapshot.context
+            || selection.graph.context != self.snapshot.context
+            || selection.selected_entity_id != self.selected_entity_id
+        {
+            return Err(PipelineError::InvalidInput(
+                "prepared selection does not match the pipeline snapshot and selected entity"
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -78,6 +103,7 @@ pub struct VerifiedPipelineRequest {
 }
 
 impl VerifiedPipelineRequest {
+    /// Validate the pinned repository context and the completeness/freshness claims.
     pub fn validate(&self) -> Result<(), PipelineError> {
         self.context
             .validate()
@@ -156,6 +182,7 @@ pub enum PipelineError {
     Engine(String),
 }
 
+/// A selected entity and the exact CoIE graph from which its ID was obtained.
 #[derive(Debug, Clone)]
 pub struct PreparedSelection {
     context: RepositoryContext,
@@ -164,6 +191,7 @@ pub struct PreparedSelection {
 }
 
 impl PreparedSelection {
+    /// Return the entity ID selected from this prepared CoIE graph.
     pub fn selected_entity_id(&self) -> &str {
         &self.selected_entity_id
     }
@@ -201,6 +229,7 @@ impl<S> InvestigationPipeline<S>
 where
     S: GraphStorage + 'static,
 {
+    /// Construct an investigation pipeline over the shared graph storage adapter.
     pub fn new(storage: Arc<S>) -> Self {
         Self {
             storage,
@@ -229,6 +258,7 @@ where
         Ok((snapshot, selection))
     }
 
+    /// Extract CoIE once and resolve a symbol or file against that exact graph.
     pub fn prepare_selection(
         &self,
         snapshot: &SourceSnapshot,
@@ -273,18 +303,9 @@ where
         request: PipelineRequest,
         selection: PreparedSelection,
     ) -> Result<PipelineResult, PipelineError> {
-        if selection.context != request.snapshot.context
-            || selection.graph.context != request.snapshot.context
-            || selection.selected_entity_id != request.selected_entity_id
-        {
-            return Err(PipelineError::InvalidInput(
-                "prepared selection does not match the pipeline snapshot and selected entity"
-                    .to_owned(),
-            ));
-        }
-        // `Some(graph)` is passed into run_stages, whose CoIE branch persists
-        // this prepared graph without invoking CoieEngine::extract again.
-        self.run_internal(request, Some(selection.graph)).await
+        let mut request = request;
+        request.prepared_selection = Some(selection);
+        self.run(request).await
     }
 
     /// Execute bounded read-only intelligence queries behind the engine
@@ -314,6 +335,7 @@ where
         Ok(CodeSearchResult { matches, truncated })
     }
 
+    /// Execute a bounded, context-scoped CoIE relationship query.
     pub async fn query_symbol_relationships(
         &self,
         request: CoieQueryRequest,
@@ -341,6 +363,7 @@ where
         })
     }
 
+    /// Analyze a selected entity using bounded, storage-backed graph evidence.
     pub async fn analyze_change_query(
         &self,
         request: ChangeAnalysisRequest,
@@ -430,8 +453,18 @@ where
         Ok(analysis)
     }
 
+    /// Run the snapshot-based pipeline using the exact CoIE extraction that
+    /// produced the selected entity ID. Call `prepare_selection` first and
+    /// attach its result to `PipelineRequest::prepared_selection`.
     pub async fn run(&self, request: PipelineRequest) -> Result<PipelineResult, PipelineError> {
-        self.run_internal(request, None).await
+        request.validate()?;
+        let graph = request
+            .prepared_selection
+            .as_ref()
+            .expect("request validation requires a prepared selection")
+            .graph
+            .clone();
+        self.run_internal(request, Some(graph)).await
     }
 
     async fn run_internal(
@@ -533,6 +566,7 @@ where
             }
             return Err(error);
         }
+        let mut id_generator = RandomIdGenerator::default();
         let result = async {
             let selected = self
                 .storage
@@ -664,7 +698,7 @@ where
                 );
             }
             let change_set = ChangeSet::for_entity(
-                format!("change-set:{}", operation.record.operation_id),
+                id_generator.next("change-set", "operation"),
                 request.context.clone(),
                 request.selected_entity_id.clone(),
                 selected.kind.clone(),
@@ -676,7 +710,7 @@ where
                 .change_record(&change_set.id, &bounded_graph, &request.selected_entity_id)
                 .map_err(PipelineError::Engine)?;
             let analysis_run = AnalysisRun {
-                id: format!("analysis-run:{}", operation.record.operation_id),
+                id: id_generator.next("analysis-run", "operation"),
                 change_set_id: change_set.id.clone(),
                 context: request.context.clone(),
                 status: "completed".to_owned(),
@@ -758,6 +792,7 @@ where
         operation: &mut Operation,
         prepared_graph: Option<CodeGraph>,
     ) -> Result<PipelineResult, PipelineError> {
+        let mut id_generator = RandomIdGenerator::default();
         if prepared_graph.is_some() {
             self.stage_start_with_message(
                 operation,
@@ -780,7 +815,35 @@ where
         }
         .validate(&request.snapshot.context)
         .map_err(|error| PipelineError::Engine(error.to_string()))?;
-        self.storage.write_code_graph(&graph).await?;
+        let selected_before_persistence = graph
+            .entities
+            .iter()
+            .find(|entity| entity.id == request.selected_entity_id)
+            .cloned()
+            .ok_or_else(|| {
+                PipelineError::InvalidInput("selected entity is absent from prepared CoIE".to_owned())
+            })?;
+        let graph = self.storage.write_code_graph(&graph).await?;
+        let selected = graph
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind == selected_before_persistence.kind
+                    && entity.path == selected_before_persistence.path
+                    && entity.name == selected_before_persistence.name
+                    && entity.native_kind == selected_before_persistence.native_kind
+                    && entity.language == selected_before_persistence.language
+                    && entity.range == selected_before_persistence.range
+                    && entity.line == selected_before_persistence.line
+                    && entity.evidence == selected_before_persistence.evidence
+            })
+            .ok_or_else(|| {
+                PipelineError::InvalidInput(
+                    "selected entity could not be resolved in the canonical persisted CoIE graph"
+                        .to_owned(),
+                )
+            })?;
+        let selected_entity_id = selected.id.clone();
         self.stage_finish(operation, "coie").await?;
 
         self.stage_start(operation, "tie").await?;
@@ -803,13 +866,6 @@ where
         self.stage_finish(operation, "tie").await?;
 
         self.stage_start(operation, "chie").await?;
-        let selected = graph
-            .entities
-            .iter()
-            .find(|entity| entity.id == request.selected_entity_id)
-            .ok_or_else(|| {
-                PipelineError::InvalidInput("selected entity is absent from CoIE".to_owned())
-            })?;
         if !matches!(selected.kind, EntityKind::Symbol | EntityKind::File) {
             return Err(PipelineError::InvalidInput(
                 "selected entity must be a symbol or file".to_owned(),
@@ -824,7 +880,7 @@ where
             .storage
             .dependency_paths_for(
                 &request.snapshot.context,
-                &request.selected_entity_id,
+                &selected_entity_id,
                 3,
                 100,
             )
@@ -832,7 +888,7 @@ where
         let paths = dependency_paths.paths;
         let mut relationship_ids = std::collections::HashSet::new();
         let mut bounded_relationships = Vec::new();
-        let mut entity_ids = std::collections::HashSet::from([request.selected_entity_id.clone()]);
+        let mut entity_ids = std::collections::HashSet::from([selected_entity_id.clone()]);
         for path in paths {
             for relationship in path.relationships {
                 if !matches!(
@@ -879,7 +935,7 @@ where
                 &bounded_graph,
                 &stored_test_graph.tests,
                 &stored_test_graph.relationships,
-                &request.selected_entity_id,
+                &selected_entity_id,
             )
             .map_err(PipelineError::Engine)?;
         if stored_test_graph.truncated {
@@ -914,20 +970,20 @@ where
             );
         }
         let mut change_set = ChangeSet::for_entity(
-            format!("change-set:{}", operation.record.operation_id),
+            id_generator.next("change-set", "operation"),
             request.snapshot.context.clone(),
-            request.selected_entity_id.clone(),
+            selected_entity_id.clone(),
             selected.kind.clone(),
             selected.evidence.clone(),
         )
         .map_err(PipelineError::Engine)?;
         let change_record = self
             .chie
-            .change_record(&change_set.id, &graph, &request.selected_entity_id)
+            .change_record(&change_set.id, &graph, &selected_entity_id)
             .map_err(PipelineError::Engine)?;
         let started_at = Utc::now().to_rfc3339();
         let analysis_run = AnalysisRun {
-            id: format!("analysis-run:{}", operation.record.operation_id),
+            id: id_generator.next("analysis-run", "operation"),
             change_set_id: change_set.id.clone(),
             context: request.snapshot.context.clone(),
             status: "completed".to_owned(),
@@ -969,11 +1025,15 @@ where
         analysis_run: &AnalysisRun,
         analysis: &crate::engines::chie::model::ChangeAnalysis,
     ) -> Result<(), PipelineError> {
-        let impact_id = format!("impact:{}", analysis_run.id);
-        let risk_id = format!("risk:{}", analysis_run.id);
+        let impact_id = derive_sha256_id("chie-impact", "analysis-run", &analysis_run.id);
+        let risk_id = derive_sha256_id("chie-risk", "analysis-run", &analysis_run.id);
         let mut entity_ids = vec![
             change_set.id.clone(),
-            format!("change-record:{}", change_record.change_set_id),
+            derive_sha256_id(
+                "chie-change-record",
+                "change-set",
+                &change_record.change_set_id,
+            ),
             analysis_run.id.clone(),
             impact_id.clone(),
         ];
@@ -993,7 +1053,11 @@ where
             DerivedRelationship {
                 kind: "CONTAINS_CHANGE".into(),
                 from: change_set.id.clone(),
-                to: format!("change-record:{}", change_record.change_set_id),
+                to: derive_sha256_id(
+                    "chie-change-record",
+                    "change-set",
+                    &change_record.change_set_id,
+                ),
             },
             DerivedRelationship {
                 kind: "PRODUCES".into(),
@@ -1453,3 +1517,75 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod prepared_selection_tests {
+    use super::{PipelineRequest, PreparedSelection};
+    use crate::{engines::coie::CoieEngine, source::SourceProvider};
+    use std::fs;
+
+    #[test]
+    fn pipeline_request_requires_the_same_prepared_graph_used_for_selection() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("lib.rs"), "pub fn selected() {}\n").unwrap();
+        let snapshot = SourceProvider::default()
+            .resolve(root.path(), "prepared-selection")
+            .unwrap();
+        let graph = CoieEngine.extract(&snapshot).unwrap();
+        let selected = graph
+            .entities
+            .iter()
+            .find(|entity| entity.name == "selected")
+            .expect("fixture symbol must be extracted")
+            .id
+            .clone();
+        let selection = PreparedSelection {
+            context: snapshot.context.clone(),
+            graph,
+            selected_entity_id: selected.clone(),
+        };
+        let request = PipelineRequest {
+            snapshot: snapshot.clone(),
+            selected_entity_id: selected,
+            request_id: "request".into(),
+            trace_id: "trace".into(),
+            operation_id: None,
+            prepared_selection: Some(selection),
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn pipeline_request_rejects_a_selection_from_another_extraction() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("lib.rs"), "pub fn selected() {}\n").unwrap();
+        let snapshot = SourceProvider::default()
+            .resolve(root.path(), "prepared-selection-mismatch")
+            .unwrap();
+        let graph = CoieEngine.extract(&snapshot).unwrap();
+        let selected = graph
+            .entities
+            .iter()
+            .find(|entity| entity.name == "selected")
+            .expect("fixture symbol must be extracted")
+            .id
+            .clone();
+        let selection = PreparedSelection {
+            context: snapshot.context.clone(),
+            graph,
+            selected_entity_id: selected.clone(),
+        };
+        let request = PipelineRequest {
+            snapshot,
+            selected_entity_id: "id-from-another-extraction".into(),
+            request_id: "request".into(),
+            trace_id: "trace".into(),
+            operation_id: None,
+            prepared_selection: Some(selection),
+        };
+
+        assert!(request.validate().is_err());
+    }
+}
+

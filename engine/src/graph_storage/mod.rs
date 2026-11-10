@@ -21,13 +21,15 @@ pub use port::{
 #[cfg(test)]
 mod tests {
     use super::DerivedRelationship;
+    use crate::source::identity::RandomIdGenerator;
 
     #[test]
     fn graph_storage_module_exports_the_derived_change_relationship_boundary() {
+        let mut id_generator = RandomIdGenerator::default();
         let relationship = DerivedRelationship {
             kind: "AFFECTS".into(),
-            from: "impact".into(),
-            to: "symbol".into(),
+            from: id_generator.next("chie-impact", "fixture-impact"),
+            to: id_generator.next("coie-entity", "fixture-symbol"),
         };
         assert_eq!(relationship.kind, "AFFECTS");
     }

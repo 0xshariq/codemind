@@ -8,10 +8,10 @@ use super::{
 };
 use crate::{
     graph_storage::{GraphStorage, StorageError},
-    source::{SourceSnapshot, tree_sitter},
+    source::{SourceSnapshot, identity::RandomIdGenerator, tree_sitter},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -19,10 +19,12 @@ use std::{
 pub struct CoieEngine;
 
 impl CoieEngine {
+    /// Build the in-memory CoIE graph for a validated source snapshot.
     pub fn extract(&self, snapshot: &SourceSnapshot) -> std::io::Result<CodeGraph> {
         snapshot
             .validate()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let mut id_generator = RandomIdGenerator::default();
         let mut graph = CodeGraph {
             context: snapshot.context.clone(),
             entities: Vec::new(),
@@ -30,16 +32,8 @@ impl CoieEngine {
             diagnostics: Vec::new(),
         };
 
-        let repository_id = stable_entity_id(
-            &snapshot.context.repository_id,
-            &snapshot.context.repository_id,
-            "repository",
-        );
-        let snapshot_id = snapshot_entity_id(
-            &snapshot.context.source_snapshot_id,
-            &snapshot.context.source_snapshot_id,
-            "repository-snapshot",
-        );
+        let repository_id = id_generator.next("coie-entity", "repository");
+        let snapshot_id = id_generator.next("coie-entity", "repository-snapshot");
 
         graph.entities.push(GraphEntity {
             id: repository_id.clone(),
@@ -70,6 +64,7 @@ impl CoieEngine {
         });
 
         graph.relationships.push(relationship(
+            &mut id_generator,
             &repository_id,
             &snapshot_id,
             RelationshipKind::HasSnapshot,
@@ -79,6 +74,8 @@ impl CoieEngine {
         ));
 
         let mut candidates = Vec::new();
+        let mut symbol_ids: HashMap<CandidateKey, String> = HashMap::new();
+        let mut seen_candidates: HashSet<CandidateKey> = HashSet::new();
         let mut file_ids = HashMap::new();
         let mut directory_ids = HashMap::new();
         let mut parsed_files = Vec::new();
@@ -86,7 +83,7 @@ impl CoieEngine {
         let mut parsed_imports_by_path = Vec::new();
 
         for entry in &snapshot.manifest.files {
-            let file_id = stable_entity_id(&snapshot.context.repository_id, &entry.path, "file");
+            let file_id = id_generator.next("coie-entity", "file");
             file_ids.insert(entry.path.clone(), file_id.clone());
             graph.entities.push(GraphEntity {
                 id: file_id.clone(),
@@ -112,11 +109,13 @@ impl CoieEngine {
                 &entry.path,
                 &mut graph,
                 &mut directory_ids,
+                &mut id_generator,
             );
 
             let components: Vec<_> = Path::new(&entry.path).components().collect();
             if components.len() == 1 {
                 graph.relationships.push(relationship(
+                    &mut id_generator,
                     &snapshot_id,
                     &file_id,
                     RelationshipKind::Contains,
@@ -133,6 +132,7 @@ impl CoieEngine {
                     directory_ids.get(&parent.to_string_lossy().replace('\\', "/"))
             {
                 graph.relationships.push(relationship(
+                    &mut id_generator,
                     parent_id,
                     &file_id,
                     RelationshipKind::Contains,
@@ -163,7 +163,15 @@ impl CoieEngine {
                     continue;
                 }
 
-                let id = symbol_id(snapshot, candidate);
+                let key = candidate_key(candidate);
+                // Parser adapters can surface the same concrete declaration
+                // through overlapping traversal paths. Normalize it before
+                // minting random IDs so it remains one semantic CoIE entity.
+                if !seen_candidates.insert(key.clone()) {
+                    continue;
+                }
+                let id = id_generator.next("coie-entity", "symbol");
+                symbol_ids.insert(key, id.clone());
 
                 let source_evidence = evidence::from_range(
                     &candidate.path,
@@ -192,6 +200,7 @@ impl CoieEngine {
                     .expect("file entity inserted before symbols");
 
                 graph.relationships.push(relationship(
+                    &mut id_generator,
                     file_id,
                     &id,
                     RelationshipKind::Defines,
@@ -277,6 +286,7 @@ impl CoieEngine {
                         tree_sitter::TREE_SITTER_ADAPTER_VERSION,
                     );
                     graph.relationships.push(relationship(
+                        &mut id_generator,
                         file_id,
                         target_id,
                         RelationshipKind::Imports,
@@ -333,7 +343,10 @@ impl CoieEngine {
                     }
                 };
 
-                let caller_id = symbol_id(snapshot, caller);
+                let caller_id = symbol_ids
+                    .get(&candidate_key(caller))
+                    .cloned()
+                    .expect("resolved caller must have a CoIE symbol identity");
                 let short = call.callee.rsplit('.').next().unwrap_or(&call.callee);
 
                 let scoped: Vec<_> = candidates
@@ -401,7 +414,10 @@ impl CoieEngine {
                     continue;
                 }
 
-                let target = symbol_id(snapshot, targets[0]);
+                let target = symbol_ids
+                    .get(&candidate_key(targets[0]))
+                    .cloned()
+                    .expect("resolved target must have a CoIE symbol identity");
 
                 let ev = evidence::from_range(
                     &path,
@@ -420,6 +436,7 @@ impl CoieEngine {
 
                 if !duplicate {
                     graph.relationships.push(relationship(
+                        &mut id_generator,
                         &caller_id,
                         &target,
                         RelationshipKind::Calls,
@@ -447,6 +464,25 @@ impl CoieEngine {
                 }),
         );
 
+        let mut semantic_relationships = std::collections::HashSet::new();
+        graph.relationships.retain(|relationship| {
+            let evidence_key = relationship.evidence.as_ref().map(|evidence| {
+                (
+                    evidence.path.clone(),
+                    evidence.start_line,
+                    evidence.end_line,
+                    evidence.snapshot_id.clone(),
+                    evidence.provenance.clone(),
+                )
+            });
+            semantic_relationships.insert((
+                format!("{:?}", relationship.kind),
+                relationship.from.clone(),
+                relationship.to.clone(),
+                evidence_key,
+            ))
+        });
+
         graph_builder::validate_detailed(&graph).map_err(|errors| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, errors.join("; "))
         })?;
@@ -461,6 +497,7 @@ impl CoieEngine {
         file_path: &str,
         graph: &mut CodeGraph,
         ids: &mut HashMap<String, String>,
+        id_generator: &mut RandomIdGenerator,
     ) {
         let mut current = PathBuf::new();
 
@@ -475,7 +512,7 @@ impl CoieEngine {
                 continue;
             }
 
-            let id = stable_entity_id(&snapshot.context.repository_id, &path, "directory");
+            let id = id_generator.next("coie-entity", "directory");
 
             ids.insert(path.clone(), id.clone());
 
@@ -501,6 +538,7 @@ impl CoieEngine {
 
                 if let (Some(parent_id), Some(child_id)) = (ids.get(&parent_path), ids.get(&path)) {
                     graph.relationships.push(relationship(
+                        id_generator,
                         parent_id,
                         child_id,
                         RelationshipKind::Contains,
@@ -515,6 +553,7 @@ impl CoieEngine {
                     .expect("directory entity inserted before root relationship");
 
                 graph.relationships.push(relationship(
+                    id_generator,
                     snapshot_id,
                     directory_id,
                     RelationshipKind::Contains,
@@ -551,6 +590,7 @@ impl CoieEngine {
         }
     }
 
+    /// Extract and persist a CoIE graph, returning counts for its canonical projection.
     pub async fn ingest<S: GraphStorage>(
         &self,
         snapshot: &SourceSnapshot,
@@ -560,45 +600,27 @@ impl CoieEngine {
             .extract(snapshot)
             .map_err(|error| StorageError::Query(error.to_string()))?;
 
-        storage.write_code_graph(&graph).await?;
+        let graph = storage.write_code_graph(&graph).await?;
 
         Ok(GraphBuildReport::from_graph(&graph))
     }
 }
 
-fn symbol_id(snapshot: &SourceSnapshot, candidate: &extraction::Candidate) -> String {
-    let scope = candidate.enclosing.as_deref().unwrap_or("<module>");
+type CandidateKey = (String, usize, usize, String, String, Option<String>);
 
-    stable_entity_id(
-        &snapshot.context.repository_id,
-        &format!(
-            "{}:{}:{}:{}:{}:{}",
-            candidate.path,
-            candidate.range.start_byte,
-            candidate.range.end_byte,
-            candidate.name,
-            candidate.native_kind,
-            scope
-        ),
-        "symbol",
-    )
-}
-
-fn stable_entity_id(repository_id: &str, value: &str, kind: &str) -> String {
-    format!(
-        "{kind}:{repository_id}:{}",
-        crate::source::identity::digest_text(value)
-    )
-}
-
-fn snapshot_entity_id(snapshot_id: &str, value: &str, kind: &str) -> String {
-    format!(
-        "{kind}:{snapshot_id}:{}",
-        crate::source::identity::digest_text(value)
+fn candidate_key(candidate: &extraction::Candidate) -> CandidateKey {
+    (
+        candidate.path.clone(),
+        candidate.range.start_byte,
+        candidate.range.end_byte,
+        candidate.name.clone(),
+        candidate.native_kind.clone(),
+        candidate.enclosing.clone(),
     )
 }
 
 fn relationship(
+    id_generator: &mut RandomIdGenerator,
     from: &str,
     to: &str,
     kind: RelationshipKind,
@@ -607,7 +629,7 @@ fn relationship(
     resolution: ResolutionStatus,
 ) -> GraphRelationship {
     GraphRelationship {
-        id: edge_id(from, to, &kind, evidence.as_ref()),
+        id: id_generator.next("coie-relationship", &format!("{kind:?}")),
         kind,
         from: from.to_owned(),
         to: to.to_owned(),
@@ -615,23 +637,6 @@ fn relationship(
         resolution,
         evidence,
     }
-}
-
-fn edge_id(
-    from: &str,
-    to: &str,
-    kind: &RelationshipKind,
-    evidence: Option<&SourceEvidence>,
-) -> String {
-    let evidence_key = evidence
-        .map(|e| format!("{}:{}:{}", e.path, e.start_line, e.end_line))
-        .unwrap_or_default();
-
-    format!(
-        "edge:{:?}:{}",
-        kind,
-        crate::source::identity::digest_text(&format!("{from}:{to}:{evidence_key}"))
-    )
 }
 
 fn resolve_import_paths(

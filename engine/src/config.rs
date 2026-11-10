@@ -1,8 +1,8 @@
 use std::{env, net::SocketAddr};
-
 use crate::git::GitHistoryOptions;
-
 use anyhow::{Context, Result, anyhow};
+
+pub const DEFAULT_FALKORDB_URL: &str = "redis://default:default@127.0.0.1:6380";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -29,7 +29,7 @@ impl Config {
             .parse::<u16>()
             .context("CODEMIND_ENGINE_PORT must be a valid TCP port")?;
         let falkordb_url =
-            env::var("FALKORDB_URL").unwrap_or_else(|_| "redis://127.0.0.1:6380".to_owned());
+            env::var("FALKORDB_URL").unwrap_or_else(|_| DEFAULT_FALKORDB_URL.to_owned());
         let falkordb_graph = env::var("FALKORDB_GRAPH").unwrap_or_else(|_| "codemind".to_owned());
         let falkordb_query_timeout_ms = env::var("FALKORDB_QUERY_TIMEOUT_MS")
             .unwrap_or_else(|_| "30000".to_owned())
@@ -171,11 +171,19 @@ mod tests {
     use super::Config;
 
     #[test]
+    fn default_falkordb_url_uses_the_local_compose_credentials() {
+        assert_eq!(
+            super::DEFAULT_FALKORDB_URL,
+            "redis://default:default@127.0.0.1:6380"
+        );
+    }
+
+    #[test]
     fn defaults_are_valid_for_local_development() {
         let config = Config::from_values(
             "127.0.0.1",
             50051,
-            "redis://127.0.0.1:6380",
+            super::DEFAULT_FALKORDB_URL,
             "codemind",
             30_000,
             64,
@@ -191,14 +199,21 @@ mod tests {
     #[test]
     fn rejects_invalid_values_without_environment_mutation() {
         assert!(
-            Config::from_values("", 50051, "redis://127.0.0.1:6380", "codemind", 30_000, 64)
-                .is_err()
+            Config::from_values(
+                "",
+                50051,
+                super::DEFAULT_FALKORDB_URL,
+                "codemind",
+                30_000,
+                64
+            )
+            .is_err()
         );
         assert!(
             Config::from_values(
                 "127.0.0.1",
                 0,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "codemind",
                 30_000,
                 64
@@ -220,7 +235,7 @@ mod tests {
             Config::from_values(
                 "127.0.0.1",
                 50051,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "bad name",
                 30_000,
                 64
@@ -231,7 +246,7 @@ mod tests {
             Config::from_values(
                 "127.0.0.1",
                 50051,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "codemind-prod",
                 30_000,
                 64
@@ -242,7 +257,7 @@ mod tests {
             Config::from_values(
                 "127.0.0.1",
                 50051,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "codemind",
                 0,
                 64
@@ -253,7 +268,7 @@ mod tests {
             Config::from_values(
                 "127.0.0.1",
                 50051,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "codemind",
                 -1,
                 64
@@ -264,7 +279,7 @@ mod tests {
             Config::from_values(
                 "127.0.0.1",
                 50051,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "codemind",
                 30_000,
                 0
@@ -282,7 +297,7 @@ mod tests {
             Config::from_values_with_options(
                 "127.0.0.1",
                 50051,
-                "redis://127.0.0.1:6380",
+                super::DEFAULT_FALKORDB_URL,
                 "codemind",
                 30_000,
                 64,

@@ -1,115 +1,212 @@
+//! Real CoIE-to-FalkorDB adapter integration against the local CodeMind
+//! checkout. This replaces the former synthetic graph/temporary one-file tests.
+
+mod support;
+
 use codemind_engine::{
-    engines::{
-        coie::{
-            extraction::{Candidate, normalize::identifier},
-            graph_builder, languages,
-            model::{CodeGraph, EntityKind, GraphEntity},
-            queries::{paths, symbols},
-        },
-        tie::{
-            discovery::{javascript_tests, python_tests, rust_tests, typescript_tests},
-            graph_builder as tie_graph_builder,
-            mapping::{evidence, target_mapping},
-            model::{TestEntity, TestStatus},
-        },
-    },
-    source::{Language, RepositoryContext},
+    engines::coie::{CoieEngine, model::EntityKind},
+    graph_storage::GraphStorage,
 };
+use serde_json::json;
 
-fn context() -> RepositoryContext {
-    RepositoryContext {
-        repository_id: "repository".to_owned(),
-        workspace_id: "workspace".to_owned(),
-        source_snapshot_id: "snapshot".to_owned(),
-        graph_version: "day-1".to_owned(),
-    }
-}
+#[tokio::test]
+#[ignore = "requires the local CodeMind Git checkout and a running FalkorDB instance"]
+async fn coie_reingestion_replaces_random_graph_records_without_duplicates() {
+    let root = support::codemind_repository_root();
+    let run_id = support::unique_run_id();
+    let workspace_id = format!("level3-coie-adapter-{run_id}");
+    let snapshot = support::local_snapshot(&root, &workspace_id).await;
+    let target = support::unique_test_targeted_symbol(&snapshot);
+    let extracted = CoieEngine
+        .extract(&snapshot)
+        .expect("CoIE must extract the real CodeMind source snapshot");
+    support::assert_code_graph_identity_contract(&extracted);
+    let storage = support::connect_falkordb().await;
 
-#[test]
-fn coie_boundaries_normalize_validate_and_query_canonical_data() {
-    assert_eq!(identifier("symbol_name"), Some("symbol_name".to_owned()));
-    assert!(languages::supports(Language::Rust));
-
-    let file = GraphEntity {
-        id: "file".to_owned(),
-        kind: EntityKind::File,
-        name: "lib.rs".to_owned(),
-        path: "lib.rs".to_owned(),
-        line: 1,
-        context: context(),
-        language: Some(Language::Rust),
-        native_kind: Some("source_file".to_owned()),
-        range: None,
-        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-        evidence: None,
-    };
-
-    let graph = CodeGraph {
-        context: context(),
-        entities: vec![file],
-        relationships: Vec::new(),
-        diagnostics: Vec::new(),
-    };
-
-    assert!(graph_builder::validate(&graph));
-    assert_eq!(symbols::symbols(&graph.entities).count(), 0);
-    assert_eq!(paths::outgoing(&graph.relationships, "file").count(), 0);
-}
-
-#[test]
-fn language_and_test_boundaries_preserve_supported_semantics() {
-    let candidate = Candidate {
-        name: "run".to_owned(),
-        path: "src/lib.rs".to_owned(),
-        language: Language::Rust,
-        native_kind: "function_item".to_owned(),
-        line: 4,
-        range: codemind_engine::source::tree_sitter::SourceRange {
-            start_byte: 0,
-            end_byte: 3,
-            start_line: 4,
-            end_line: 4,
-            start_column: 1,
-            end_column: 4,
-        },
-        context: context(),
-        enclosing: None,
-        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-    };
-
-    assert!(codemind_engine::engines::coie::extraction::validate::supported(&candidate));
-
-    assert!(rust_tests::is_test_declaration("#[test]\nfn works() {}"));
-
-    assert!(javascript_tests::is_test_declaration(
-        "test('works', () => {})"
-    ));
-
-    assert!(typescript_tests::is_test_declaration(
-        "it('works', () => {})"
-    ));
-
-    assert!(python_tests::is_test_declaration("def test_works():"));
-
-    assert!(target_mapping::supported(
-        codemind_engine::engines::tie::model::TestRelationshipKind::Targets
-    ));
-
+    let first_report = CoieEngine
+        .ingest(&snapshot, &storage)
+        .await
+        .expect("CoIE must persist the real CodeMind graph through FalkorDbStorage");
+    assert_eq!(first_report.context, snapshot.context);
+    assert_eq!(first_report.entity_count, extracted.entities.len());
     assert_eq!(
-        evidence::normalize_path(r"tests\unit.py"),
-        Some("tests/unit.py".to_owned())
+        first_report.relationship_count,
+        extracted.relationships.len()
+    );
+    assert!(first_report.entity_count > 0);
+    assert!(first_report.relationship_count > 0);
+
+    let selected_candidates = storage
+        .exact_code_entities_by_name(&snapshot.context, &target.name)
+        .await
+        .unwrap();
+    let selected = selected_candidates
+        .iter()
+        .find(|entity| entity.path == target.path)
+        .expect("the actual test-targeted CodeMind symbol must be persisted");
+    support::assert_random_sha256_id_contract(
+        &selected.id,
+        "coie-entity:",
+        "Persisted CoIE entity",
+    );
+    assert_eq!(
+        selected_candidates
+            .iter()
+            .filter(|entity| { entity.kind == EntityKind::Symbol && entity.path == target.path })
+            .count(),
+        1
+    );
+    assert_eq!(selected.kind, EntityKind::Symbol);
+    assert_eq!(selected.name, target.name);
+    assert_eq!(selected.path, target.path);
+    assert_eq!(selected.context, snapshot.context);
+
+    let file_candidates = storage
+        .exact_code_entities_by_name(&snapshot.context, &target.path)
+        .await
+        .unwrap();
+    let file_entity = file_candidates
+        .iter()
+        .find(|entity| entity.kind == EntityKind::File && entity.path == target.path)
+        .expect("the selected symbol's source file must be persisted in the Code Graph");
+    let first_edges = storage
+        .relationships_for(&snapshot.context, &file_entity.id, 10_000)
+        .await
+        .unwrap();
+    assert!(
+        first_edges
+            .iter()
+            .any(|edge| edge.kind
+                == codemind_engine::engines::coie::model::RelationshipKind::Defines),
+        "the persisted file must have its actual Defines relationship"
+    );
+    // Re-ingest the identical immutable snapshot. Graph-record IDs are newly
+    // minted, while the storage adapter must replace the old projection rather
+    // than accumulate duplicate records.
+    let second_report = CoieEngine
+        .ingest(&snapshot, &storage)
+        .await
+        .expect("re-ingesting an identical snapshot must remain valid");
+    assert_eq!(second_report.entity_count, first_report.entity_count);
+    assert_eq!(
+        second_report.relationship_count,
+        first_report.relationship_count
+    );
+    let second_selected_candidates = storage
+        .exact_code_entities_by_name(&snapshot.context, &target.name)
+        .await
+        .unwrap();
+    let second_selected = second_selected_candidates
+        .iter()
+        .find(|entity| entity.path == target.path)
+        .expect("re-ingestion must leave one current selected symbol");
+    support::assert_random_sha256_id_contract(
+        &second_selected.id,
+        "coie-entity:",
+        "Re-ingested CoIE entity",
+    );
+    assert_eq!(second_selected_candidates.len(), 1);
+    let second_file_candidates = storage
+        .exact_code_entities_by_name(&snapshot.context, &target.path)
+        .await
+        .unwrap();
+    let second_file = second_file_candidates
+        .iter()
+        .find(|entity| entity.kind == EntityKind::File && entity.path == target.path)
+        .expect("re-ingestion must leave one current source file");
+    assert_eq!(
+        second_file_candidates
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::File)
+            .count(),
+        1
+    );
+    let second_edges = storage
+        .relationships_for(&snapshot.context, &second_file.id, 10_000)
+        .await
+        .unwrap();
+    assert_eq!(second_edges.len(), first_edges.len());
+    assert!(
+        second_edges
+            .iter()
+            .any(|edge| edge.kind
+                == codemind_engine::engines::coie::model::RelationshipKind::Defines)
+    );
+    assert!(
+        storage
+            .entity_for(&snapshot.context, &selected.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the previous projection's selected entity must be replaced"
+    );
+    assert!(
+        storage
+            .entity_for(&snapshot.context, &file_entity.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the previous projection's file entity must be replaced"
     );
 
-    let test = TestEntity {
-        id: "test".to_owned(),
-        name: "test_works".to_owned(),
-        path: "tests/unit.py".to_owned(),
-        line: 1,
-        framework: "pytest-unittest".to_owned(),
-        status: TestStatus::Supported,
-        kind: Default::default(),
-        context: context(),
-    };
+    // Workspace identity selects the physical graph. The same repository and
+    // snapshot IDs in another workspace must not reveal the persisted entity.
+    let mut other_workspace = snapshot.context.clone();
+    other_workspace.workspace_id = format!("{workspace_id}-isolated");
+    assert!(
+        storage
+            .entity_for(&other_workspace, &second_selected.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        storage
+            .relationships_for(&other_workspace, &second_file.id, 10_000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
-    assert!(tie_graph_builder::validate(&[test], &[]).is_ok());
+    let graph_name = support::physical_graph_name(&workspace_id);
+    let manifest_path = support::persist_run_manifest(
+        &run_id,
+        &json!({
+            "run_id": run_id.clone(),
+            "repository_root": root.display().to_string(),
+            "repository_id": snapshot.context.repository_id.clone(),
+            "workspace_id": workspace_id.clone(),
+            "physical_falkordb_graph": graph_name.clone(),
+            "source_snapshot_id": snapshot.context.source_snapshot_id.clone(),
+            "graph_version": snapshot.context.graph_version.clone(),
+            "selected_symbol": target.name.clone(),
+            "selected_entity_name": target.name.clone(),
+            "code_entity_count": first_report.entity_count,
+            "code_relationship_count": first_report.relationship_count,
+            "file_relationship_count": first_edges.len(),
+            "random_id_reingest_replaced_projection": true,
+            "other_workspace_isolated": true,
+        }),
+    );
+
+    let reconnected = support::connect_falkordb().await;
+    assert!(
+        reconnected
+            .entity_for(&snapshot.context, &second_selected.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let durable_edges = reconnected
+        .relationships_for(&snapshot.context, &second_file.id, 10_000)
+        .await
+        .unwrap();
+    assert_eq!(durable_edges.len(), second_edges.len());
+
+    println!(
+        "CoIE adapter integration persisted {} entities and {} relationships",
+        first_report.entity_count, first_report.relationship_count
+    );
+    println!("FalkorDB physical graph: {graph_name}");
+    println!("Run manifest: {}", manifest_path.display());
 }

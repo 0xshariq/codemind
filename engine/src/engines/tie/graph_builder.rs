@@ -5,9 +5,22 @@ use super::model::{
 use crate::engines::coie::model::{CodeGraph, EntityKind};
 
 pub fn validate(tests: &[TestEntity], relationships: &[TestRelationship]) -> Result<(), String> {
-    let ids: std::collections::HashSet<&str> = tests.iter().map(|test| test.id.as_str()).collect();
-    if ids.len() != tests.len() {
-        return Err("duplicate TIE test ID".into());
+    let mut ids = std::collections::HashMap::<&str, &TestEntity>::with_capacity(tests.len());
+    for test in tests {
+        if let Some(first) = ids.insert(test.id.as_str(), test) {
+            return Err(format!(
+                "duplicate TIE test ID `{}`: first `{}` at {}:{} ({:?}), repeated `{}` at {}:{} ({:?})",
+                test.id,
+                first.name,
+                first.path,
+                first.line,
+                first.kind,
+                test.name,
+                test.path,
+                test.line,
+                test.kind,
+            ));
+        }
     }
     let mut relationship_ids = std::collections::HashSet::new();
     for test in tests {

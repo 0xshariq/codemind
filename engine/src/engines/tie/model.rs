@@ -9,7 +9,7 @@ pub enum TestStatus {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TestNodeKind {
     #[default]
     Test,
@@ -18,7 +18,7 @@ pub enum TestNodeKind {
     TestCase,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TestRelationshipKind {
     Contains,
     UsesFixture,

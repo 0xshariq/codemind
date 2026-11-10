@@ -36,6 +36,10 @@ pub struct RepositoryIndexResult {
     pub history_entity_count: usize,
     pub history_relationship_count: usize,
     pub complete: bool,
+    /// Captured source-like files with no parser adapter, such as `.ipynb`.
+    pub unsupported_source_file_count: u64,
+    /// Files omitted by bounded source capture. Unsupported captured source
+    /// files are reported separately and also make `complete` false.
     pub omitted_file_count: u64,
     pub history_complete: bool,
     pub history_omitted_commits_at_least: u64,
@@ -66,6 +70,7 @@ impl<S> RepositoryIndexPipeline<S>
 where
     S: GraphStorage + 'static,
 {
+    /// Construct the repository index pipeline over the supplied graph storage.
     pub fn new(storage: Arc<S>) -> Self {
         Self {
             storage,
@@ -74,6 +79,7 @@ where
         }
     }
 
+    /// Build, persist and verify the complete repository graph for a prepared source.
     pub async fn run(
         &self,
         prepared: &PreparedRepository,
@@ -91,7 +97,7 @@ where
         }
         .validate(&prepared.snapshot.context)
         .map_err(|error| RepositoryIndexError::Engine(error.to_string()))?;
-        self.storage.write_code_graph(&graph).await?;
+        let graph = self.storage.write_code_graph(&graph).await?;
         self.stage_finish(operation, stages[0]).await?;
 
         self.stage_start(operation, stages[1]).await?;
@@ -190,6 +196,7 @@ where
 
         let complete = repository_index_is_complete(
             prepared.snapshot.manifest.omitted_files.len() as u64,
+            prepared.snapshot.manifest.unsupported_source_file_count(),
             history_graph.complete,
             history_graph.omitted_commits_at_least,
             history_graph.omitted_path_changes_at_least,
@@ -208,6 +215,10 @@ where
             history_entity_count: history_graph.entities.len(),
             history_relationship_count: history_graph.relationships.len(),
             complete,
+            unsupported_source_file_count: prepared
+                .snapshot
+                .manifest
+                .unsupported_source_file_count(),
             omitted_file_count: prepared.snapshot.manifest.omitted_files.len() as u64,
             history_complete: history_graph.complete,
             history_omitted_commits_at_least: history_graph.omitted_commits_at_least,
@@ -216,6 +227,7 @@ where
         })
     }
 
+    /// Apply a verified Git change to the indexed repository when incremental mutation is safe.
     pub async fn run_incremental(
         &self,
         previous_context: &crate::source::RepositoryContext,
@@ -361,6 +373,7 @@ where
 
         let complete = repository_index_is_complete(
             prepared.snapshot.manifest.omitted_files.len() as u64,
+            prepared.snapshot.manifest.unsupported_source_file_count(),
             history_graph.complete,
             history_graph.omitted_commits_at_least,
             history_graph.omitted_path_changes_at_least,
@@ -379,6 +392,10 @@ where
             history_entity_count: history_graph.entities.len(),
             history_relationship_count: history_graph.relationships.len(),
             complete,
+            unsupported_source_file_count: prepared
+                .snapshot
+                .manifest
+                .unsupported_source_file_count(),
             omitted_file_count: prepared.snapshot.manifest.omitted_files.len() as u64,
             history_complete: history_graph.complete,
             history_omitted_commits_at_least: history_graph.omitted_commits_at_least,
@@ -443,11 +460,13 @@ fn ensure_verification_matches(
 
 fn repository_index_is_complete(
     omitted_file_count: u64,
+    unsupported_source_file_count: u64,
     history_complete: bool,
     omitted_commits_at_least: u64,
     omitted_path_changes_at_least: u64,
 ) -> bool {
     omitted_file_count == 0
+        && unsupported_source_file_count == 0
         && history_complete
         && omitted_commits_at_least == 0
         && omitted_path_changes_at_least == 0
@@ -502,6 +521,44 @@ pub(crate) fn stage_order() -> [&'static str; 4] {
 
 #[cfg(test)]
 mod tests {
+    use crate::source::SourceProvider;
+    use std::{fs, path::Path};
+
+    #[test]
+    fn zig_source_without_a_parser_keeps_repository_index_partial() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/main.zig"), "pub fn main() void {}\n").unwrap();
+
+        let snapshot = SourceProvider::default()
+            .resolve(root.path(), "zig-completeness")
+            .expect("capture Zig source file");
+        let zig = snapshot
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path == "src/main.zig")
+            .expect("Zig source must be retained in the manifest");
+
+        assert_eq!(zig.language, None, "no Zig parser is registered");
+        assert_eq!(
+            snapshot.manifest.unsupported_source_file_count(),
+            1,
+            "unparsed Zig source must be counted as an analysis gap"
+        );
+        assert!(!super::repository_index_is_complete(
+            snapshot.manifest.omitted_files.len() as u64,
+            snapshot.manifest.unsupported_source_file_count(),
+            true,
+            0,
+            0
+        ));
+        assert_eq!(
+            crate::source::Language::from_path(Path::new("src/main.zig")),
+            None
+        );
+    }
+
     #[test]
     fn repository_index_stage_order_is_stable() {
         assert_eq!(
@@ -526,11 +583,12 @@ mod tests {
 
     #[test]
     fn source_or_history_omissions_keep_repository_index_partial() {
-        assert!(super::repository_index_is_complete(0, true, 0, 0));
-        assert!(!super::repository_index_is_complete(1, true, 0, 0));
-        assert!(!super::repository_index_is_complete(0, false, 0, 0));
-        assert!(!super::repository_index_is_complete(0, true, 1, 0));
-        assert!(!super::repository_index_is_complete(0, true, 0, 1));
+        assert!(super::repository_index_is_complete(0, 0, true, 0, 0));
+        assert!(!super::repository_index_is_complete(1, 0, true, 0, 0));
+        assert!(!super::repository_index_is_complete(0, 0, false, 0, 0));
+        assert!(!super::repository_index_is_complete(0, 0, true, 1, 0));
+        assert!(!super::repository_index_is_complete(0, 0, true, 0, 1));
+        assert!(!super::repository_index_is_complete(0, 1, true, 0, 0));
     }
 
     #[test]
