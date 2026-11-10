@@ -1,0 +1,29 @@
+
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: codemind-falkordb
+
+    ports:
+      # FalkorDB server
+      - "127.0.0.1:6380:6379"
+
+      # FalkorDB Browser UI
+      - "127.0.0.1:3000:3000"
+
+    volumes:
+      # Persistent database storage
+      - ./falkordb-data:/var/lib/falkordb/data
+
+    environment:
+      # Default authentication
+      REDIS_ARGS: "--requirepass default --appendonly yes --appendfsync everysec"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "default", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s

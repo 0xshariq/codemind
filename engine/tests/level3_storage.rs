@@ -1,179 +1,207 @@
+//! White-box FalkorDB adapter test over the graph produced by the real engine.
+//! No graph nodes or relationships are fabricated by this test.
+
 mod support;
 
 use codemind_engine::{
-    engines::coie::model::{
-        CodeGraph, EntityKind, GraphEntity, GraphRelationship, RelationshipKind, ResolutionStatus,
-    },
-    graph_storage::GraphStorage,
-    source::RepositoryContext,
+    engines::history::HistoryGraphContext,
+    graph_storage::{GraphStorage, generation_id_for_context},
 };
-use uuid::Uuid;
-
-fn context() -> RepositoryContext {
-    RepositoryContext {
-        repository_id: "level3-storage-repository".into(),
-        workspace_id: "level3-storage".into(),
-        source_snapshot_id: "level3-storage-snapshot".into(),
-        graph_version: "level3-storage-graph".into(),
-    }
-}
-
-fn symbol(context: &RepositoryContext, id: &str, name: &str) -> GraphEntity {
-    GraphEntity {
-        id: id.into(),
-        kind: EntityKind::Symbol,
-        name: name.into(),
-        path: format!("src/{name}.rs"),
-        line: 1,
-        context: context.clone(),
-        language: Some(codemind_engine::source::Language::Rust),
-        native_kind: Some("function_item".into()),
-        range: None,
-        resolution: ResolutionStatus::Resolved,
-        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
-            path: format!("src/{name}.rs"),
-            start_line: 1,
-            end_line: 1,
-            snapshot_id: context.source_snapshot_id.clone(),
-            provenance: "level3".into(),
-        }),
-    }
-}
+use serde_json::json;
 
 #[tokio::test]
-#[ignore = "requires FalkorDB; run with --ignored"]
-async fn code_graph_reingestion_removes_stale_canonical_relationships() {
-    let graph_name = format!("codemind_level3_stale_{}", Uuid::new_v4().simple());
-    let storage = support::storage(&graph_name).await;
-    let context = context();
-    let a = symbol(&context, "a", "a");
-    let b = symbol(&context, "b", "b");
-    let c = symbol(&context, "c", "c");
-    let evidence = Some(codemind_engine::engines::coie::model::SourceEvidence {
-        path: "src/a.rs".into(),
-        start_line: 1,
-        end_line: 1,
-        snapshot_id: context.source_snapshot_id.clone(),
-        provenance: "level3".into(),
-    });
+#[ignore = "requires the local CodeMind Git checkout and a running FalkorDB instance"]
+async fn adapter_reads_all_persisted_graph_domains_with_workspace_context() {
+    let prepared = support::prepare_local_codemind("storage-readback").await;
+    let investigation = support::run_verified_investigation(&prepared).await;
+    let context = prepared.knowledge.context.clone();
+    let target_id = prepared.knowledge.selected_entity_id.clone();
+    let history_context = HistoryGraphContext::from_source_context(&context).unwrap();
+    let generation_id = generation_id_for_context(&context);
 
-    let first = CodeGraph {
-        context: context.clone(),
-        entities: vec![a.clone(), b.clone(), c.clone()],
-        relationships: vec![
-            GraphRelationship {
-                id: "a-b".into(),
-                kind: RelationshipKind::Calls,
-                from: a.id.clone(),
-                to: b.id.clone(),
-                context: context.clone(),
-                resolution: ResolutionStatus::Resolved,
-                evidence: evidence.clone(),
-            },
-            GraphRelationship {
-                id: "b-c".into(),
-                kind: RelationshipKind::Calls,
-                from: b.id.clone(),
-                to: c.id.clone(),
-                context: context.clone(),
-                resolution: ResolutionStatus::Resolved,
-                evidence: evidence.clone(),
-            },
-        ],
-        diagnostics: Vec::new(),
-    };
-    storage.write_code_graph(&first).await.unwrap();
-    assert_eq!(
-        storage
-            .relationships_for(&context, "a", 20)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-
-    let second = CodeGraph {
-        context: context.clone(),
-        entities: vec![a.clone(), b.clone(), c.clone()],
-        relationships: vec![GraphRelationship {
-            id: "a-b".into(),
-            kind: RelationshipKind::Calls,
-            from: a.id.clone(),
-            to: b.id.clone(),
-            context: context.clone(),
-            resolution: ResolutionStatus::Resolved,
-            evidence: evidence.clone(),
-        }],
-        diagnostics: Vec::new(),
-    };
-    storage.write_code_graph(&second).await.unwrap();
-    assert!(
-        storage
-            .relationships_for(&context, "b", 20)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires FalkorDB; run with --ignored"]
-async fn empty_test_graph_is_a_valid_snapshot_and_clears_previous_tests() {
-    let graph_name = format!("codemind_level3_empty_tie_{}", Uuid::new_v4().simple());
-    let storage = support::storage(&graph_name).await;
-    let context = context();
-    let code = symbol(&context, "target", "target");
-    let graph = CodeGraph {
-        context: context.clone(),
-        entities: vec![code.clone()],
-        relationships: Vec::new(),
-        diagnostics: Vec::new(),
-    };
-    storage.write_code_graph(&graph).await.unwrap();
-
-    let test = codemind_engine::engines::tie::model::TestEntity {
-        id: "test-1".into(),
-        name: "test_target".into(),
-        path: "tests/target.rs".into(),
-        line: 1,
-        framework: "rust".into(),
-        status: codemind_engine::engines::tie::model::TestStatus::Supported,
-        kind: Default::default(),
-        context: context.clone(),
-    };
-    let relationship = codemind_engine::engines::tie::model::TestRelationship {
-        id: "target-1".into(),
-        kind: codemind_engine::engines::tie::model::TestRelationshipKind::Targets,
-        test_id: test.id.clone(),
-        target_symbol_name: Some("target".into()),
-        entity_id: Some(code.id.clone()),
-        evidence_path: "tests/target.rs".into(),
-        evidence: None,
-        resolution: codemind_engine::engines::tie::model::TestResolution::Resolved,
-        target_kind: Default::default(),
-        context: context.clone(),
-    };
-    storage
-        .write_test_graph(&context, &[test], &[relationship])
+    let exact = prepared
+        .storage
+        .exact_code_entities_by_name(&context, &prepared.selected_target.name)
         .await
         .unwrap();
-    let target_ids = vec![code.id.clone()];
+    assert_eq!(
+        exact.len(),
+        1,
+        "selected symbol name must resolve uniquely in persisted CoIE data"
+    );
+    assert_eq!(exact[0].name, prepared.selected_target.name);
+    assert_eq!(exact[0].path, prepared.selected_target.path);
+    support::assert_random_sha256_id_contract(
+        &exact[0].id,
+        "coie-entity:",
+        "Persisted CoIE entity",
+    );
+
+    let code_entity = prepared
+        .storage
+        .entity_for(&context, &target_id)
+        .await
+        .unwrap();
+    assert!(code_entity.is_some());
+    // Query the relationship and dependency read paths even when a particular
+    // symbol has no outgoing edge. The assertion is that the actual adapter
+    // executes each bounded query successfully against the indexed graph.
+    let _outgoing = prepared
+        .storage
+        .relationships_for(&context, &target_id, 128)
+        .await
+        .unwrap();
+    let _incoming = prepared
+        .storage
+        .incoming_relationships_for(&context, &target_id, 128)
+        .await
+        .unwrap();
+    let _dependency_incoming = prepared
+        .storage
+        .dependency_incoming_relationships_for(&context, &target_id, 128)
+        .await
+        .unwrap();
+    let dependency_paths = prepared
+        .storage
+        .dependency_paths_for(&context, &target_id, 3, 100)
+        .await
+        .unwrap();
+    assert!(dependency_paths.paths.len() <= 100);
+
+    let history = prepared
+        .storage
+        .history_entities_for(&history_context, 5_000)
+        .await
+        .unwrap();
     assert!(
-        !storage
-            .tests_for_context(&context, &target_ids, 20)
+        !history.is_empty(),
+        "History Graph read returned no real Git history entities"
+    );
+    support::assert_history_graph_identity_contract(&history, &[]);
+
+    let tests = prepared
+        .storage
+        .tests_for_context(&context, std::slice::from_ref(&target_id), 500)
+        .await
+        .unwrap();
+    assert!(
+        !tests.tests.is_empty(),
+        "TIE did not persist any tests for the selected target"
+    );
+    support::assert_tie_identity_contract(&tests.tests, &tests.relationships);
+    let has_selected_target = support::has_resolved_target_edge(&tests.relationships, &target_id);
+    assert!(
+        has_selected_target,
+        "persisted TIE graph has no resolved TARGETS edge to CoIE entity `{}` (symbol `{}` at {}:{}); returned {} tests and {} relationships (truncated={}): {:?}",
+        target_id,
+        prepared.selected_target.name,
+        prepared.selected_target.path,
+        prepared.selected_target.line,
+        tests.tests.len(),
+        tests.relationships.len(),
+        tests.truncated,
+        tests
+            .relationships
+            .iter()
+            .filter(|edge| {
+                edge.kind == codemind_engine::engines::tie::model::TestRelationshipKind::Targets
+            })
+            .take(12)
+            .map(|edge| (
+                edge.entity_id.as_deref(),
+                edge.target_symbol_name.as_deref(),
+                edge.resolution
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    let change = prepared
+        .storage
+        .derived_relationships_for_run(&context, &investigation.analysis_run.id, 5_000)
+        .await
+        .unwrap();
+    assert!(
+        !change.is_empty(),
+        "ChIE produced no persisted Change Graph relationships"
+    );
+
+    assert!(
+        prepared
+            .storage
+            .verified_snapshot_exists(&context)
+            .await
+            .unwrap()
+    );
+    assert!(
+        prepared
+            .storage
+            .verify_published_generation(&context, &generation_id)
+            .await
+            .unwrap()
+    );
+
+    let expected_graph_name = support::physical_graph_name(&prepared.workspace_id);
+    let manifest_path = support::persist_run_manifest(
+        &prepared.run_id,
+        &json!({
+            "run_id": prepared.run_id.clone(),
+            "repository_root": prepared.root.display().to_string(),
+            "repository_id": context.repository_id.clone(),
+            "workspace_id": context.workspace_id.clone(),
+            "physical_falkordb_graph": expected_graph_name.clone(),
+            "source_snapshot_id": context.source_snapshot_id.clone(),
+            "graph_version": context.graph_version.clone(),
+            "generation_id": generation_id,
+            "selected_entity_id": target_id,
+            "selected_symbol": prepared.selected_target.name.clone(),
+            "code_entity_readable": code_entity.is_some(),
+            "history_entity_count": history.len(),
+            "test_entity_count": tests.tests.len(),
+            "test_relationship_count": tests.relationships.len(),
+            "change_relationship_count": change.len(),
+            "dependency_path_count": dependency_paths.paths.len(),
+            "analysis_run_id": investigation.analysis_run.id.clone(),
+            "operation_id": prepared.operation_id.clone(),
+        }),
+    );
+
+    // A new adapter instance proves the records are in FalkorDB, not only in
+    // the first adapter's process-local schema cache or client state.
+    let fresh_storage = support::connect_falkordb().await;
+    assert!(
+        fresh_storage
+            .entity_for(&context, &prepared.knowledge.selected_entity_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        !fresh_storage
+            .history_entities_for(&history_context, 5_000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !fresh_storage
+            .tests_for_context(
+                &context,
+                std::slice::from_ref(&prepared.knowledge.selected_entity_id),
+                500
+            )
             .await
             .unwrap()
             .tests
+            .is_empty()
+    );
+    assert!(
+        !fresh_storage
+            .derived_relationships_for_run(&context, &investigation.analysis_run.id, 5_000)
+            .await
+            .unwrap()
             .is_empty()
     );
 
-    storage.write_test_graph(&context, &[], &[]).await.unwrap();
-    assert!(
-        storage
-            .tests_for_context(&context, &target_ids, 20)
-            .await
-            .unwrap()
-            .tests
-            .is_empty()
-    );
+    println!("FalkorDB physical graph: {expected_graph_name}");
+    println!("Level 3 storage manifest: {}", manifest_path.display());
 }

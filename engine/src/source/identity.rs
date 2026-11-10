@@ -6,14 +6,67 @@
 //! snapshot. A Git commit ID must never replace the source snapshot ID or graph version.
 
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
+use uuid::Uuid;
 
 /// Bump this revision when the canonical graph projection contract changes in
 /// a way that can alter graph meaning for identical captured source bytes. The
-/// v4 adds the explicit Test Graph node/relationship contract while preserving
-/// the repository-scoped Code/TIE identities introduced by v3. A Git
-/// transport/history implementation alone does not change this contract.
-pub const GRAPH_PROJECTION_VERSION: &str = "codemind-canonical-graph-v4";
+/// v4 added the explicit Test Graph node/relationship contract. v5 switched TIE
+/// identity generation. v6 standardizes random SHA-256 IDs across CoIE,
+/// History, TIE and ChIE graph records. Repository, workspace, snapshot and
+/// operation identities remain stable because they are lifecycle contracts.
+pub const GRAPH_PROJECTION_VERSION: &str = "codemind-canonical-graph-v6";
+
+/// Mints opaque per-process graph-record IDs from fresh UUIDv4 entropy hashed
+/// with SHA-256. A generator is scoped to one projection build so it can
+/// explicitly reject any repeated digest before publishing a graph.
+#[derive(Debug, Default)]
+pub struct RandomIdGenerator {
+    issued: HashSet<String>,
+}
+
+impl RandomIdGenerator {
+    /// Generate a collision-checked SHA-256 ID in the supplied namespace.
+    /// `domain` separates different logical record types that share a prefix.
+    pub fn next(&mut self, prefix: &str, domain: &str) -> String {
+        loop {
+            let nonce = Uuid::new_v4();
+            let mut material = Vec::with_capacity(prefix.len() + domain.len() + 48);
+            append_component(&mut material, b"codemind-random-graph-id-v1");
+            append_component(&mut material, prefix.as_bytes());
+            append_component(&mut material, domain.as_bytes());
+            append_component(&mut material, nonce.as_bytes());
+
+            let id = format!("{prefix}:{}", digest_bytes(&material));
+            if self.issued.insert(id.clone()) {
+                return id;
+            }
+        }
+    }
+
+    /// Number of IDs minted by this generator. Useful for graph-build checks.
+    pub fn issued_count(&self) -> usize {
+        self.issued.len()
+    }
+}
+
+/// Derive a namespaced SHA-256 identifier from an already-random parent ID.
+/// This is used for related persisted records whose identity must remain
+/// reproducible within one operation (for example impact/risk nodes).
+pub fn derive_sha256_id(prefix: &str, domain: &str, random_parent_id: &str) -> String {
+    let mut material =
+        Vec::with_capacity(prefix.len() + domain.len() + random_parent_id.len() + 32);
+    append_component(&mut material, b"codemind-derived-random-id-v1");
+    append_component(&mut material, prefix.as_bytes());
+    append_component(&mut material, domain.as_bytes());
+    append_component(&mut material, random_parent_id.as_bytes());
+    format!("{prefix}:{}", digest_bytes(&material))
+}
+
+fn append_component(material: &mut Vec<u8>, component: &[u8]) {
+    material.extend_from_slice(&(component.len() as u64).to_be_bytes());
+    material.extend_from_slice(component);
+}
 
 /// Stable lowercase SHA-256 hex digest. Keep all persisted digest generation
 /// routed through this helper rather than adding module-specific hash logic.
@@ -86,6 +139,25 @@ mod tests {
             digest_text("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn random_graph_ids_are_sha256_namespaced_and_unique_within_a_projection() {
+        let mut generator = super::RandomIdGenerator::default();
+        let ids = (0..128)
+            .map(|_| generator.next("engine-entity", "code-entity"))
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(ids.len(), 128);
+        assert_eq!(generator.issued_count(), 128);
+        assert!(ids.iter().all(|id| {
+            id.strip_prefix("engine-entity:").is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        }));
     }
 
     #[test]

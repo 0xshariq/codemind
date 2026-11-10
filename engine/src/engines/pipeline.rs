@@ -17,7 +17,10 @@ use crate::{
     },
     lifecycle::Operation,
     repository::KnowledgeCompleteness,
-    source::{RepositoryContext, SourceProvider, SourceSnapshot},
+    source::{
+        RepositoryContext, SourceProvider, SourceSnapshot,
+        identity::{RandomIdGenerator, derive_sha256_id},
+    },
 };
 use chrono::Utc;
 use std::sync::Arc;
@@ -533,6 +536,7 @@ where
             }
             return Err(error);
         }
+        let mut id_generator = RandomIdGenerator::default();
         let result = async {
             let selected = self
                 .storage
@@ -664,7 +668,7 @@ where
                 );
             }
             let change_set = ChangeSet::for_entity(
-                format!("change-set:{}", operation.record.operation_id),
+                id_generator.next("change-set", "operation"),
                 request.context.clone(),
                 request.selected_entity_id.clone(),
                 selected.kind.clone(),
@@ -676,7 +680,7 @@ where
                 .change_record(&change_set.id, &bounded_graph, &request.selected_entity_id)
                 .map_err(PipelineError::Engine)?;
             let analysis_run = AnalysisRun {
-                id: format!("analysis-run:{}", operation.record.operation_id),
+                id: id_generator.next("analysis-run", "operation"),
                 change_set_id: change_set.id.clone(),
                 context: request.context.clone(),
                 status: "completed".to_owned(),
@@ -758,6 +762,7 @@ where
         operation: &mut Operation,
         prepared_graph: Option<CodeGraph>,
     ) -> Result<PipelineResult, PipelineError> {
+        let mut id_generator = RandomIdGenerator::default();
         if prepared_graph.is_some() {
             self.stage_start_with_message(
                 operation,
@@ -914,7 +919,7 @@ where
             );
         }
         let mut change_set = ChangeSet::for_entity(
-            format!("change-set:{}", operation.record.operation_id),
+            id_generator.next("change-set", "operation"),
             request.snapshot.context.clone(),
             request.selected_entity_id.clone(),
             selected.kind.clone(),
@@ -927,7 +932,7 @@ where
             .map_err(PipelineError::Engine)?;
         let started_at = Utc::now().to_rfc3339();
         let analysis_run = AnalysisRun {
-            id: format!("analysis-run:{}", operation.record.operation_id),
+            id: id_generator.next("analysis-run", "operation"),
             change_set_id: change_set.id.clone(),
             context: request.snapshot.context.clone(),
             status: "completed".to_owned(),
@@ -969,11 +974,15 @@ where
         analysis_run: &AnalysisRun,
         analysis: &crate::engines::chie::model::ChangeAnalysis,
     ) -> Result<(), PipelineError> {
-        let impact_id = format!("impact:{}", analysis_run.id);
-        let risk_id = format!("risk:{}", analysis_run.id);
+        let impact_id = derive_sha256_id("chie-impact", "analysis-run", &analysis_run.id);
+        let risk_id = derive_sha256_id("chie-risk", "analysis-run", &analysis_run.id);
         let mut entity_ids = vec![
             change_set.id.clone(),
-            format!("change-record:{}", change_record.change_set_id),
+            derive_sha256_id(
+                "chie-change-record",
+                "change-set",
+                &change_record.change_set_id,
+            ),
             analysis_run.id.clone(),
             impact_id.clone(),
         ];
@@ -993,7 +1002,11 @@ where
             DerivedRelationship {
                 kind: "CONTAINS_CHANGE".into(),
                 from: change_set.id.clone(),
-                to: format!("change-record:{}", change_record.change_set_id),
+                to: derive_sha256_id(
+                    "chie-change-record",
+                    "change-set",
+                    &change_record.change_set_id,
+                ),
             },
             DerivedRelationship {
                 kind: "PRODUCES".into(),

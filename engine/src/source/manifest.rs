@@ -57,6 +57,19 @@ pub enum SourceManifestError {
 }
 
 impl SourceManifest {
+    /// Count captured source-like files for which this engine has no parser.
+    /// Opaque assets (images, archives, and datasets, for example) are not treated as failed source analysis. Jupyter notebooks are
+    /// source containers and must remain visible as an analysis gap until an
+    /// explicit notebook adapter is available.
+    pub fn unsupported_source_file_count(&self) -> u64 {
+        self.files
+            .iter()
+            .filter(|file| {
+                file.language.is_none() && is_unsupported_source_extension(Path::new(&file.path))
+            })
+            .count() as u64
+    }
+
     /// Validate the manifest independently from the snapshot byte map.
     pub fn validate(&self) -> Result<(), SourceManifestError> {
         if self.repository_id.trim().is_empty() || self.source_snapshot_id.trim().is_empty() {
@@ -163,6 +176,49 @@ impl SourceManifest {
     }
 }
 
+fn is_unsupported_source_extension(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "ipynb"
+            | "java"
+            | "kt"
+            | "kts"
+            | "go"
+            | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "hpp"
+            | "cs"
+            | "rb"
+            | "php"
+            | "swift"
+            | "scala"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "sql"
+            | "vue"
+            | "svelte"
+            | "dart"
+            | "lua"
+            | "r"
+            | "jl"
+            | "ex"
+            | "exs"
+            | "hs"
+            | "elm"
+            | "ml"
+            | "mli"
+            | "pl"
+            | "pm"
+    )
+}
+
 fn append_field(output: &mut Vec<u8>, field: &[u8]) {
     output.extend_from_slice(&(field.len() as u64).to_be_bytes());
     output.extend_from_slice(field);
@@ -177,7 +233,7 @@ fn is_sha256_hex(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileEntry, OmittedFile, SourceManifest, SourceManifestError};
+    use super::{FileEntry, Language, OmittedFile, SourceManifest, SourceManifestError};
 
     fn manifest() -> SourceManifest {
         SourceManifest {
@@ -285,5 +341,35 @@ mod tests {
             value.validate(),
             Err(SourceManifestError::SnapshotIdentityMismatch)
         );
+    }
+
+    #[test]
+    fn counts_unsupported_source_containers_but_not_opaque_assets() {
+        let manifest = SourceManifest {
+            repository_id: "repo".into(),
+            source_snapshot_id: "snapshot-placeholder".into(),
+            files: vec![
+                FileEntry {
+                    path: "notebooks/model.ipynb".into(),
+                    language: None,
+                    bytes: 1,
+                    digest: "0".repeat(64),
+                },
+                FileEntry {
+                    path: "assets/plot.png".into(),
+                    language: None,
+                    bytes: 1,
+                    digest: "1".repeat(64),
+                },
+                FileEntry {
+                    path: "src/main.py".into(),
+                    language: Some(Language::Python),
+                    bytes: 1,
+                    digest: "2".repeat(64),
+                },
+            ],
+            omitted_files: vec![],
+        };
+        assert_eq!(manifest.unsupported_source_file_count(), 1);
     }
 }

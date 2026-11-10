@@ -1,102 +1,108 @@
+//! Level 3 MemoryRepository test using evidence from a real, indexed CodeMind
+//! symbol and the same workspace partition as its Code/History/Test/Change data.
+
+mod support;
+
+use chrono::Utc;
 use codemind_engine::{
-    engines::coie::model::{CodeGraph, EntityKind, GraphEntity, ResolutionStatus},
-    graph_storage::{FalkorDbStorage, GraphStorage},
-    memory::{
-        model::{EvidenceReference, MemoryRecord},
-        repository::MemoryRepository,
-    },
-    source::RepositoryContext,
+    graph_storage::MemoryRepository,
+    memory::model::{EvidenceReference, MemoryRecord},
 };
-use uuid::Uuid;
+use serde_json::json;
 
 #[tokio::test]
-#[ignore = "requires FalkorDB; run with --ignored"]
-async fn memory_survives_a_fresh_repository_lookup_with_scope_and_evidence() {
-    let graph_name = format!("codemind_level3_memory_{}", Uuid::new_v4().simple());
-
-    let storage = {
-        let url = std::env::var("FALKORDB_URL").unwrap_or_else(|_| "redis://127.0.0.1:6380".into());
-
-        FalkorDbStorage::connect(&url, &graph_name).await.unwrap()
-    };
-
-    let context = RepositoryContext {
-        repository_id: "repo-memory".into(),
-        workspace_id: "workspace-memory".into(),
-        source_snapshot_id: "snapshot-memory".into(),
-        graph_version: "graph-memory".into(),
-    };
-
+#[ignore = "requires the local CodeMind Git checkout and a running FalkorDB instance"]
+async fn repository_memory_persists_real_snapshot_evidence_and_respects_workspace_partition() {
+    let prepared = support::prepare_local_codemind("memory-persistence").await;
+    let _analysis = support::run_verified_investigation(&prepared).await;
+    let context = prepared.knowledge.context.clone();
+    let now = Utc::now().to_rfc3339();
     let record = MemoryRecord {
-        memory_id: format!("memory:{}", graph_name),
-        owner_id: "repo-memory".into(),
+        memory_id: format!("level3-memory-{}", prepared.run_id),
+        owner_id: context.repository_id.clone(),
         kind: "semantic".into(),
         scope: "repository".into(),
         lifecycle: "validated".into(),
         freshness: "fresh".into(),
-        payload_json: r#"{"summary":"Code graph is snapshot pinned"}"#.into(),
+        payload_json: serde_json::to_string(&json!({
+            "summary": format!("CodeMind symbol {} is indexed and test-targeted", prepared.selected_target.name),
+            "symbol_id": prepared.selected_target.entity_id.clone(),
+            "source_path": prepared.selected_target.path.clone(),
+        }))
+        .unwrap(),
         context: context.clone(),
         evidence: vec![EvidenceReference {
-            path: "src/lib.rs".into(),
-            start_line: 1,
-            end_line: 2,
+            path: prepared.selected_target.path.clone(),
+            start_line: prepared.selected_target.line,
+            end_line: prepared.selected_target.line,
             snapshot_id: context.source_snapshot_id.clone(),
         }],
-        idempotency_key: format!("idem:{}", graph_name),
+        idempotency_key: format!("level3-memory-idempotency-{}", prepared.run_id),
         version: 1,
-        created_at: "2026-10-17T00:00:00Z".into(),
-        updated_at: "2026-10-17T00:00:00Z".into(),
+        created_at: now.clone(),
+        updated_at: now,
     };
 
-    // FalkorDB requires the graph key to be materialized before a read-only
-    // query can be executed. Memory persistence performs a read-before-write
-    // idempotency check, so bootstrap this disposable graph with a minimal
-    // canonical write first. This keeps the test focused on memory behavior
-    // rather than FalkorDB's empty-graph semantics.
-    let bootstrap_graph = CodeGraph {
-        context: context.clone(),
-        entities: vec![GraphEntity {
-            id: format!("bootstrap:{}", graph_name),
-            kind: EntityKind::File,
-            name: "src/lib.rs".into(),
-            path: "src/lib.rs".into(),
-            line: 1,
-            context: context.clone(),
-            language: Some(codemind_engine::source::Language::Rust),
-            native_kind: Some("source_file".into()),
-            range: None,
-            resolution: ResolutionStatus::Resolved,
-            evidence: None,
-        }],
-        relationships: Vec::new(),
-        diagnostics: Vec::new(),
-    };
+    let persisted = prepared.storage.persist_memory(&record).await.unwrap();
+    assert_eq!(persisted.memory_id, record.memory_id);
+    assert_eq!(persisted.context, context);
+    assert_eq!(persisted.evidence, record.evidence);
 
-    storage.write_code_graph(&bootstrap_graph).await.unwrap();
-
-    let graph_storage: &dyn GraphStorage = &storage;
-
-    let persisted = MemoryRepository::persist_memory(&storage, &record)
+    // A new adapter sees the same record, proving it was persisted rather than
+    // retained in a process-local repository object.
+    let fresh_storage = support::connect_falkordb().await;
+    let retrieved = fresh_storage
+        .retrieve_memory(
+            &context,
+            "repository",
+            "semantic",
+            &context.repository_id,
+            100,
+        )
         .await
         .unwrap();
+    let matching = retrieved
+        .iter()
+        .find(|candidate| candidate.memory_id == record.memory_id)
+        .expect("persisted memory record must be readable after adapter reconnection");
+    assert_eq!(matching.evidence[0].path, prepared.selected_target.path);
+    assert_eq!(matching.evidence[0].snapshot_id, context.source_snapshot_id);
 
-    assert_eq!(persisted.memory_id, record.memory_id);
-
-    let retrieved = MemoryRepository::retrieve_memory(
-        graph_storage,
-        &context,
-        "repository",
-        "semantic",
-        "repo-memory",
-        10,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(retrieved.len(), 1);
-    assert_eq!(retrieved[0].memory_id, record.memory_id);
-    assert_eq!(
-        retrieved[0].evidence[0].snapshot_id,
-        context.source_snapshot_id
+    // The same repository/snapshot identity in another workspace must not see
+    // this memory because workspace_id selects the physical partition.
+    let mut other_workspace = context.clone();
+    other_workspace.workspace_id = format!("{}-other", context.workspace_id);
+    let isolated = fresh_storage
+        .retrieve_memory(
+            &other_workspace,
+            "repository",
+            "semantic",
+            &other_workspace.repository_id,
+            100,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !isolated
+            .iter()
+            .any(|candidate| candidate.memory_id == record.memory_id),
+        "repository memory crossed a workspace storage boundary"
     );
+
+    let manifest_path = support::persist_run_manifest(
+        &prepared.run_id,
+        &json!({
+            "run_id": prepared.run_id.clone(),
+            "repository_id": context.repository_id.clone(),
+            "workspace_id": context.workspace_id.clone(),
+            "physical_falkordb_graph": support::physical_graph_name(&context.workspace_id),
+            "source_snapshot_id": context.source_snapshot_id.clone(),
+            "memory_id": record.memory_id.clone(),
+            "evidence_path": prepared.selected_target.path.clone(),
+            "evidence_line": prepared.selected_target.line,
+            "memory_retrieved_after_reconnect": true,
+            "other_workspace_isolated": true,
+        }),
+    );
+    println!("Level 3 memory manifest: {}", manifest_path.display());
 }

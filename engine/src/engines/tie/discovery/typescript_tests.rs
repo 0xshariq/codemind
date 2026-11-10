@@ -1,4 +1,7 @@
-use super::{TestCaseDeclaration, TestDeclaration, node_text, parse_tree, range_of};
+use super::{
+    TestCaseDeclaration, TestDeclaration, is_callee_of_chained_call, is_suite_invocation,
+    is_test_invocation, node_text, parse_tree, range_of,
+};
 use crate::engines::tie::model::{TestNodeKind, TestStatus};
 
 pub fn discover(source: &str) -> std::io::Result<Vec<TestDeclaration>> {
@@ -32,16 +35,13 @@ fn collect(
     output: &mut Vec<TestDeclaration>,
 ) {
     if node.kind() == "call_expression"
+        && !is_callee_of_chained_call(node)
         && let Some(function) = node.child_by_field_name("function")
     {
-        let callee = node_text(function, source).unwrap_or_default();
-        let short = callee.rsplit('.').next().unwrap_or(callee.as_str());
-        let base = callee.split('.').next().unwrap_or(callee.as_str());
-        let is_parameterized = callee.contains("test.each") || callee.contains("it.each");
+        let is_suite = is_suite_invocation(function, source);
+        let test_invocation = is_test_invocation(function, source);
 
-        if base == "describe"
-            && let Some(arguments) = node.child_by_field_name("arguments")
-        {
+        if is_suite && let Some(arguments) = node.child_by_field_name("arguments") {
             let name = arguments
                 .named_child(0)
                 .and_then(|child| node_text(child, source))
@@ -72,8 +72,7 @@ fn collect(
             return;
         }
 
-        if (base == "test" || base == "it")
-            && (short == "test" || short == "it" || short == "each" || is_parameterized)
+        if let Some(is_parameterized) = test_invocation
             && let Some(arguments) = node.child_by_field_name("arguments")
         {
             let name = arguments
@@ -83,7 +82,7 @@ fn collect(
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "anonymous-test".into());
 
-            let status = if is_parameterized || short == "each" {
+            let status = if is_parameterized {
                 TestStatus::Partial
             } else if arguments.named_child(1).is_some() {
                 TestStatus::Supported

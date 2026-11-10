@@ -227,14 +227,7 @@ impl FalkorDbStorage {
             .await
         {
             Ok(()) => Ok(()),
-            Err(error)
-                if error
-                    .to_string()
-                    .to_ascii_lowercase()
-                    .contains("already exists") =>
-            {
-                Ok(())
-            }
+            Err(error) if is_existing_index_error(&error) => Ok(()),
             Err(error) => Err(StorageError::Query(format!(
                 "failed to initialize required index {entity_type:?} {label}.{property}: {error}"
             ))),
@@ -248,6 +241,15 @@ impl FalkorDbStorage {
     fn graph_name_for_workspace(&self, workspace_id: &str) -> Result<String, StorageError> {
         resolve_workspace_graph_name(&self.graph_namespace, workspace_id)
     }
+}
+
+/// FalkorDB versions may report an idempotent duplicate-index attempt as
+/// either "already exists" or "<property> is already indexed". A newly
+/// connected adapter must accept both responses when it reinitializes the
+/// schema for a graph whose indexes were created by an earlier connection.
+fn is_existing_index_error(error: &impl std::fmt::Display) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("already exists") || message.contains("already indexed")
 }
 
 /// Resolve a physical FalkorDB graph from the validated workspace security scope.
@@ -1451,30 +1453,6 @@ impl GraphStorage for FalkorDbStorage {
                 ));
             }
         }
-        graph
-            .query(
-                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE NOT n.id IN $entity_ids DETACH DELETE n",
-            )
-            .with_param("workspace", graph_data.context.workspace_id.clone())
-            .with_param("repository", graph_data.context.repository_id.clone())
-            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
-            .with_param("graph_version", graph_data.context.graph_version.clone())
-            .with_param("entity_ids", entity_ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>())
-            .with_timeout(self.query_timeout_ms).execute()
-            .await
-            .map_err(|error| StorageError::Query(error.to_string()))?;
-        graph
-            .query(
-                "MATCH (:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->(:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE type(r) IN ['HAS_SNAPSHOT', 'CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS'] AND NOT r.id IN $relationship_ids DELETE r",
-            )
-            .with_param("workspace", graph_data.context.workspace_id.clone())
-            .with_param("repository", graph_data.context.repository_id.clone())
-            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
-            .with_param("graph_version", graph_data.context.graph_version.clone())
-            .with_param("relationship_ids", relationship_ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>())
-                        .with_timeout(self.query_timeout_ms).execute()
-            .await
-            .map_err(|error| StorageError::Query(error.to_string()))?;
         for entity in &graph_data.entities {
             let merge_key = crate::graph_storage::falkordb::write::stable_merge_key(
                 &entity.id,
@@ -1572,6 +1550,33 @@ impl GraphStorage for FalkorDbStorage {
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
         }
+        // Reconcile only after every incoming entity and relationship has been
+        // persisted successfully. A failed MERGE must never delete facts from
+        // the last complete projection for this immutable snapshot context.
+        graph
+            .query(
+                "MATCH (n:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE NOT n.id IN $entity_ids DETACH DELETE n",
+            )
+            .with_param("workspace", graph_data.context.workspace_id.clone())
+            .with_param("repository", graph_data.context.repository_id.clone())
+            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
+            .with_param("graph_version", graph_data.context.graph_version.clone())
+            .with_param("entity_ids", entity_ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>())
+            .with_timeout(self.query_timeout_ms).execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+        graph
+            .query(
+                "MATCH (:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->(:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE type(r) IN ['HAS_SNAPSHOT', 'CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS'] AND NOT r.id IN $relationship_ids DELETE r",
+            )
+            .with_param("workspace", graph_data.context.workspace_id.clone())
+            .with_param("repository", graph_data.context.repository_id.clone())
+            .with_param("snapshot", graph_data.context.source_snapshot_id.clone())
+            .with_param("graph_version", graph_data.context.graph_version.clone())
+            .with_param("relationship_ids", relationship_ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>())
+                        .with_timeout(self.query_timeout_ms).execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
         Ok(())
     }
 
@@ -1668,8 +1673,16 @@ impl GraphStorage for FalkorDbStorage {
                 "Change Graph selected entity is absent from the canonical graph".to_owned(),
             ));
         }
-        let impact_id = format!("impact:{}", analysis_run.id);
-        let risk_id = format!("risk:{}", analysis_run.id);
+        let impact_id = crate::source::identity::derive_sha256_id(
+            "chie-impact",
+            "analysis-run",
+            &analysis_run.id,
+        );
+        let risk_id = crate::source::identity::derive_sha256_id(
+            "chie-risk",
+            "analysis-run",
+            &analysis_run.id,
+        );
         let graph_name = self.graph_name_for_workspace(&analysis.context.workspace_id)?;
         let mut graph = self.ready_graph(&graph_name).await?;
 
@@ -1691,7 +1704,11 @@ impl GraphStorage for FalkorDbStorage {
             .query(
                 "MERGE (n:ChangeRecord {id: $id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) SET n.payload_json = $payload",
             )
-            .with_param("id", format!("change-record:{}", change_record.change_set_id))
+            .with_param("id", crate::source::identity::derive_sha256_id(
+                "chie-change-record",
+                "change-set",
+                &change_record.change_set_id,
+            ))
             .with_param("workspace", analysis.context.workspace_id.clone())
             .with_param("repository", analysis.context.repository_id.clone())
             .with_param("snapshot", analysis.context.source_snapshot_id.clone())
@@ -1785,7 +1802,11 @@ impl GraphStorage for FalkorDbStorage {
                 "MATCH (set:ChangeSet {id: $set_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}), (record:ChangeRecord {id: $record_id, workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) MERGE (set)-[:CONTAINS_CHANGE]->(record)",
             )
             .with_param("set_id", change_set.id.clone())
-            .with_param("record_id", format!("change-record:{}", change_record.change_set_id))
+            .with_param("record_id", crate::source::identity::derive_sha256_id(
+                "chie-change-record",
+                "change-set",
+                &change_record.change_set_id,
+            ))
             .with_param("workspace", analysis.context.workspace_id.clone())
             .with_param("repository", analysis.context.repository_id.clone())
             .with_param("snapshot", analysis.context.source_snapshot_id.clone())
@@ -2299,7 +2320,10 @@ impl GraphStorage for FalkorDbStorage {
         limit: usize,
     ) -> Result<crate::graph_storage::port::StoredTestGraph, StorageError> {
         Self::validate_context(context)?;
-        let limit = limit.clamp(1, 100);
+        // Keep this read on the same hard bound as every other graph read.
+        // The old local cap of 100 could silently omit a requested TARGETS
+        // edge on high-fan-in symbols even when the caller requested 200/500.
+        let limit = crate::graph_storage::falkordb::read::bounded_limit(limit);
         let query_limit = limit.saturating_add(1);
         let graph_name = self.graph_name_for_workspace(&context.workspace_id)?;
         let mut graph = self.ready_graph(&graph_name).await?;
@@ -2308,7 +2332,11 @@ impl GraphStorage for FalkorDbStorage {
         if !target_entity_ids.is_empty() {
             let mut rows = graph
                 .ro_query(
-                    "MATCH (t:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r:TARGETS|DECLARED_BY]->(e:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE e.id IN $targets RETURN r.id AS relationship_id, t.id AS test_id, e.id AS entity_id, type(r) AS relationship_type, r.evidence_path AS evidence_path, r.evidence_start_line AS start_line, r.evidence_end_line AS end_line, r.evidence_snapshot_id AS evidence_snapshot_id, r.evidence_provenance AS evidence_provenance, r.resolution AS resolution LIMIT $limit",
+                    // TARGETS are the primary answer for a code-entity lookup.
+                    // Sort by the actual relationship label rather than a
+                    // mutable auxiliary property so DECLARED_BY rows cannot
+                    // consume the bounded page before TARGETS rows.
+                    "MATCH (t:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r:TARGETS|DECLARED_BY]->(e:CodeEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE e.id IN $targets RETURN r.id AS relationship_id, t.id AS test_id, e.id AS entity_id, e.name AS target_symbol_name, type(r) AS relationship_type, r.evidence_path AS evidence_path, r.evidence_start_line AS start_line, r.evidence_end_line AS end_line, r.evidence_snapshot_id AS evidence_snapshot_id, r.evidence_provenance AS evidence_provenance, r.resolution AS resolution ORDER BY relationship_type DESC, relationship_id ASC LIMIT $limit",
                 )
                 .with_param("workspace", context.workspace_id.clone())
                 .with_param("repository", context.repository_id.clone())
@@ -2365,7 +2393,13 @@ impl GraphStorage for FalkorDbStorage {
                     test_id: row
                         .try_get("test_id")
                         .map_err(|error| StorageError::Query(error.to_string()))?,
-                    target_symbol_name: None,
+                    // The relationship stores the target entity ID. Resolve its
+                    // current semantic name from the matched CodeEntity so a
+                    // storage read-back preserves the in-memory TIE contract.
+                    target_symbol_name: Some(
+                        row.try_get("target_symbol_name")
+                            .map_err(|error| StorageError::Query(error.to_string()))?,
+                    ),
                     entity_id: Some(
                         row.try_get("entity_id")
                             .map_err(|error| StorageError::Query(error.to_string()))?,
@@ -3103,51 +3137,6 @@ impl GraphStorage for FalkorDbStorage {
         let graph_name = self.graph_name_for_workspace(&context.workspace_id)?;
         let mut graph = self.ready_graph(&graph_name).await?;
 
-        graph
-            .query(
-                "MATCH (n:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE NOT n.id IN $test_ids DETACH DELETE n",
-            )
-            .with_param("workspace", context.workspace_id.clone())
-            .with_param("repository", context.repository_id.clone())
-            .with_param("snapshot", context.source_snapshot_id.clone())
-            .with_param("graph_version", context.graph_version.clone())
-            .with_param(
-                "test_ids",
-                test_ids
-                    .iter()
-                    .map(|id| (*id).to_owned())
-                    .collect::<Vec<_>>(),
-            )
-            .with_timeout(self.query_timeout_ms).execute()
-            .await
-            .map_err(|error| StorageError::Query(error.to_string()))?;
-
-        graph
-            .query(
-                "MATCH (:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->() WHERE type(r) IN $relationship_types AND NOT r.id IN $relationship_ids DELETE r",
-            )
-            .with_param("workspace", context.workspace_id.clone())
-            .with_param("repository", context.repository_id.clone())
-            .with_param("snapshot", context.source_snapshot_id.clone())
-            .with_param("graph_version", context.graph_version.clone())
-            .with_param(
-                "relationship_types",
-                crate::graph_storage::falkordb::schema::TEST_RELATIONSHIP_LABELS
-                    .iter()
-                    .map(|value| (*value).to_owned())
-                    .collect::<Vec<_>>(),
-            )
-            .with_param(
-                "relationship_ids",
-                relationship_ids
-                    .iter()
-                    .map(|id| (*id).to_owned())
-                    .collect::<Vec<_>>(),
-            )
-            .with_timeout(self.query_timeout_ms).execute()
-            .await
-            .map_err(|error| StorageError::Query(error.to_string()))?;
-
         for test in tests {
             graph
                 .query(
@@ -3222,6 +3211,54 @@ impl GraphStorage for FalkorDbStorage {
                 .await
                 .map_err(|error| StorageError::Query(error.to_string()))?;
         }
+        // Delay stale-fact deletion until all replacement facts and resolved
+        // relationships have been written. Partial writes therefore leave the
+        // previously complete same-snapshot projection intact and retryable.
+        graph
+            .query(
+                "MATCH (n:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version}) WHERE NOT n.id IN $test_ids DETACH DELETE n",
+            )
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("snapshot", context.source_snapshot_id.clone())
+            .with_param("graph_version", context.graph_version.clone())
+            .with_param(
+                "test_ids",
+                test_ids
+                    .iter()
+                    .map(|id| (*id).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .with_timeout(self.query_timeout_ms).execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+
+        graph
+            .query(
+                "MATCH (:TestEntity {workspace_id: $workspace, repository_id: $repository, snapshot_id: $snapshot, graph_version: $graph_version})-[r]->() WHERE type(r) IN $relationship_types AND NOT r.id IN $relationship_ids DELETE r",
+            )
+            .with_param("workspace", context.workspace_id.clone())
+            .with_param("repository", context.repository_id.clone())
+            .with_param("snapshot", context.source_snapshot_id.clone())
+            .with_param("graph_version", context.graph_version.clone())
+            .with_param(
+                "relationship_types",
+                crate::graph_storage::falkordb::schema::TEST_RELATIONSHIP_LABELS
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .with_param(
+                "relationship_ids",
+                relationship_ids
+                    .iter()
+                    .map(|id| (*id).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .with_timeout(self.query_timeout_ms).execute()
+            .await
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+
         Ok(())
     }
 }
@@ -3866,5 +3903,23 @@ mod phase27_routing_tests {
     fn untrusted_namespace_and_workspace_values_are_rejected() {
         assert!(resolve_workspace_graph_name("codemind;drop", "workspace-a").is_err());
         assert!(resolve_workspace_graph_name("codemind", "workspace\n-a").is_err());
+    }
+}
+
+#[cfg(test)]
+mod index_initialization_tests {
+    use super::is_existing_index_error;
+
+    #[test]
+    fn existing_index_responses_are_idempotent_across_falkordb_error_wordings() {
+        assert!(is_existing_index_error(
+            &"An error occurred while sending the request to Redis: 'id' is already indexed"
+        ));
+        assert!(is_existing_index_error(
+            &"An index on :CodeEntity(id) already exists"
+        ));
+        assert!(!is_existing_index_error(
+            &"permission denied while creating index"
+        ));
     }
 }

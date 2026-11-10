@@ -6,7 +6,7 @@ use super::{
     risk::{assessment, factors::*},
     test_impact,
 };
-use chrono::Utc;
+use crate::source::identity::RandomIdGenerator;
 
 use crate::engines::{
     coie::model::{CodeGraph, EntityKind},
@@ -124,16 +124,7 @@ impl ChieEngine {
         });
 
         let mut analysis = ChangeAnalysis {
-            analysis_id: format!(
-                "analysis-{}",
-                crate::source::identity::digest_text(&format!(
-                    "{}:{}:{}:{}",
-                    graph.context.repository_id,
-                    graph.context.source_snapshot_id,
-                    selected_entity_id,
-                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
-                ))
-            ),
+            analysis_id: RandomIdGenerator::default().next("chie-analysis", "analysis"),
             context: graph.context.clone(),
             selected_entity_id: selected_entity_id.to_owned(),
             impact_paths: paths.clone(),

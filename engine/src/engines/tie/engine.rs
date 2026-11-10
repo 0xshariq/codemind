@@ -3,7 +3,7 @@ use super::model::{
     TestEntity, TestNodeKind, TestRelationship, TestRelationshipKind, TestResolution, TestStatus,
     TestTargetKind,
 };
-use crate::source::{SourceSnapshot, tree_sitter};
+use crate::source::{SourceSnapshot, identity::RandomIdGenerator, tree_sitter};
 
 /// Canonical in-memory TIE result used by discovery, validation and future
 /// pipeline integration. It is deliberately the same pair returned by
@@ -31,6 +31,7 @@ impl TieEngine {
     ) -> std::io::Result<(Vec<TestEntity>, Vec<TestRelationship>)> {
         let mut tests = Vec::new();
         let mut relationships = Vec::new();
+        let mut id_generator = RandomIdGenerator::default();
 
         for file in &snapshot.manifest.files {
             let Some(language) = file.language else {
@@ -39,12 +40,25 @@ impl TieEngine {
             let source = snapshot.file_text(&file.path)?;
             let parsed = tree_sitter::parse(language, source);
             let declarations = discover_declarations(language, source)?;
-            let mut ids_by_start = std::collections::HashMap::new();
+            let mut ids_by_declaration = std::collections::HashMap::new();
+            let mut suite_ids_by_start = std::collections::HashMap::new();
             let mut fixture_ids_by_name = std::collections::HashMap::new();
 
             for declaration in &declarations {
-                let id = declaration_id(&snapshot.context.repository_id, &file.path, declaration);
-                ids_by_start.insert(declaration.range.start_byte, id.clone());
+                let id = declaration_id(&mut id_generator, declaration.kind);
+                ids_by_declaration.insert(
+                    (
+                        declaration.range.start_byte,
+                        declaration.range.end_byte,
+                        declaration.kind,
+                        declaration.name.clone(),
+                        declaration.framework.clone(),
+                    ),
+                    id.clone(),
+                );
+                if declaration.kind == TestNodeKind::TestSuite {
+                    suite_ids_by_start.insert(declaration.range.start_byte, id.clone());
+                }
                 if declaration.kind == TestNodeKind::Fixture {
                     fixture_ids_by_name.insert(declaration.name.clone(), id.clone());
                 }
@@ -61,14 +75,20 @@ impl TieEngine {
             }
 
             for declaration in &declarations {
-                let source_id = ids_by_start
-                    .get(&declaration.range.start_byte)
+                let source_id = ids_by_declaration
+                    .get(&(
+                        declaration.range.start_byte,
+                        declaration.range.end_byte,
+                        declaration.kind,
+                        declaration.name.clone(),
+                        declaration.framework.clone(),
+                    ))
                     .cloned()
                     .expect("every TIE declaration receives an ID");
 
                 if declaration.kind == TestNodeKind::Test {
                     relationships.push(TestRelationship {
-                        id: format!("declared-by:{source_id}"),
+                        id: relationship_id(&mut id_generator, TestRelationshipKind::DeclaredBy),
                         kind: TestRelationshipKind::DeclaredBy,
                         test_id: source_id.clone(),
                         target_symbol_name: Some(declaration.name.clone()),
@@ -88,10 +108,10 @@ impl TieEngine {
                 }
 
                 if let Some(parent_start_byte) = declaration.parent_start_byte
-                    && let Some(parent_id) = ids_by_start.get(&parent_start_byte)
+                    && let Some(parent_id) = suite_ids_by_start.get(&parent_start_byte)
                 {
                     relationships.push(TestRelationship {
-                        id: format!("contains:{parent_id}:{source_id}"),
+                        id: relationship_id(&mut id_generator, TestRelationshipKind::Contains),
                         kind: TestRelationshipKind::Contains,
                         test_id: parent_id.clone(),
                         target_symbol_name: None,
@@ -105,13 +125,7 @@ impl TieEngine {
                 }
 
                 for case in &declaration.cases {
-                    let case_id = format!(
-                        "test-case:{}:{}:{}:{}",
-                        snapshot.context.repository_id,
-                        file.path,
-                        declaration.range.start_byte,
-                        case.range.start_byte
-                    );
+                    let case_id = id_generator.next("tie-case", "parameterized-test-case");
                     tests.push(TestEntity {
                         id: case_id.clone(),
                         name: case.name.clone(),
@@ -123,7 +137,7 @@ impl TieEngine {
                         context: snapshot.context.clone(),
                     });
                     relationships.push(TestRelationship {
-                        id: format!("has-case:{source_id}:{case_id}"),
+                        id: relationship_id(&mut id_generator, TestRelationshipKind::HasCase),
                         kind: TestRelationshipKind::HasCase,
                         test_id: source_id.clone(),
                         target_symbol_name: None,
@@ -153,7 +167,7 @@ impl TieEngine {
                         continue;
                     };
                     relationships.push(TestRelationship {
-                        id: format!("uses-fixture:{source_id}:{fixture_id}"),
+                        id: relationship_id(&mut id_generator, TestRelationshipKind::UsesFixture),
                         kind: TestRelationshipKind::UsesFixture,
                         test_id: source_id.clone(),
                         target_symbol_name: Some(fixture_name.clone()),
@@ -181,7 +195,7 @@ impl TieEngine {
                             continue;
                         }
                         relationships.push(TestRelationship {
-                            id: format!("depends-on:{source_id}:{target_id}"),
+                            id: relationship_id(&mut id_generator, TestRelationshipKind::DependsOn),
                             kind: TestRelationshipKind::DependsOn,
                             test_id: source_id.clone(),
                             target_symbol_name: Some(fixture_name.clone()),
@@ -217,16 +231,19 @@ impl TieEngine {
                 {
                     continue;
                 }
-                let test_id = ids_by_start
-                    .get(&declaration.range.start_byte)
+                let test_id = ids_by_declaration
+                    .get(&(
+                        declaration.range.start_byte,
+                        declaration.range.end_byte,
+                        TestNodeKind::Test,
+                        declaration.name.clone(),
+                        declaration.framework.clone(),
+                    ))
                     .cloned()
                     .expect("test declaration has an ID");
                 let target_name = short.to_owned();
                 relationships.push(TestRelationship {
-                    id: format!(
-                        "targets:{test_id}:{target_name}:{}:{}",
-                        call.range.start_line, call.range.start_byte
-                    ),
+                    id: relationship_id(&mut id_generator, TestRelationshipKind::Targets),
                     kind: TestRelationshipKind::Targets,
                     test_id,
                     target_symbol_name: Some(target_name),
@@ -246,6 +263,24 @@ impl TieEngine {
             }
         }
 
+        // Declaration adapters already normalize duplicate AST discoveries before
+        // IDs are assigned. Keep all generated records here: random IDs must not
+        // be used as a semantic deduplication key.
+
         Ok((tests, relationships))
     }
+}
+
+fn relationship_id(generator: &mut RandomIdGenerator, kind: TestRelationshipKind) -> String {
+    let domain = match kind {
+        TestRelationshipKind::Contains => "contains",
+        TestRelationshipKind::UsesFixture => "uses-fixture",
+        TestRelationshipKind::DependsOn => "depends-on",
+        TestRelationshipKind::DeclaredBy => "declared-by",
+        TestRelationshipKind::Targets => "targets",
+        TestRelationshipKind::HasCase => "has-case",
+        TestRelationshipKind::SetupBy => "setup-by",
+        TestRelationshipKind::TeardownBy => "teardown-by",
+    };
+    generator.next("tie-edge", domain)
 }

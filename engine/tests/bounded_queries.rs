@@ -1,65 +1,117 @@
 use codemind_engine::{
-    contract::result::{Completeness, Outcome, serialized_size},
-    engines::coie::{
-        model::{GraphRelationship, RelationshipKind},
-        queries::{paths, relationships},
-    },
-    source::RepositoryContext,
+    engines::coie::{CoieEngine, EntityKind, RelationshipKind, graph_builder},
+    repository::RepositoryIdentity,
+    source::SourceProvider,
 };
+use std::fs;
 
-fn context(workspace_id: &str) -> RepositoryContext {
-    RepositoryContext {
-        repository_id: "repo".to_owned(),
-        workspace_id: workspace_id.to_owned(),
-        source_snapshot_id: "snapshot".to_owned(),
-        graph_version: "day-2".to_owned(),
-    }
-}
+#[test]
+fn extraction_preserves_source_context_and_relationships() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("lib.rs"),
+        "fn called() {}\nfn caller() { called(); }\n",
+    )
+    .unwrap();
+    let snapshot = SourceProvider::default()
+        .resolve(root.path(), "workspace-a")
+        .unwrap();
+    let graph = CoieEngine.extract(&snapshot).unwrap();
 
-fn relationship(context: RepositoryContext, id: &str, from: &str) -> GraphRelationship {
-    GraphRelationship {
-        id: id.to_owned(),
-        kind: RelationshipKind::Calls,
-        from: from.to_owned(),
-        to: "target".to_owned(),
-        context,
-        resolution: codemind_engine::engines::coie::model::ResolutionStatus::Resolved,
-        evidence: Some(codemind_engine::engines::coie::model::SourceEvidence {
-            path: "src/lib.rs".to_owned(),
-            start_line: 1,
-            end_line: 1,
-            snapshot_id: "snapshot".to_owned(),
-            provenance: "test".to_owned(),
-        }),
-    }
+    assert_eq!(graph.context.workspace_id, "workspace-a");
+    assert!(
+        graph
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::File)
+    );
+    assert!(graph.entities.iter().any(|entity| entity.name == "called"));
+    assert!(
+        graph
+            .relationships
+            .iter()
+            .any(|edge| edge.kind == RelationshipKind::Defines)
+    );
+    assert!(
+        graph
+            .relationships
+            .iter()
+            .any(|edge| edge.kind == RelationshipKind::Calls)
+    );
+    graph_builder::validate_detailed(&graph)
+        .expect("CoIE must resolve every generated relationship endpoint");
 }
 
 #[test]
-fn bounded_relationships_preserve_context_and_report_truncation() {
-    let requested = context("workspace-a");
-    let other = context("workspace-b");
-    let facts = vec![
-        relationship(requested.clone(), "one", "source"),
-        relationship(requested.clone(), "two", "source"),
-        relationship(other, "foreign", "source"),
-    ];
+fn repeated_resolution_preserves_canonical_snapshot_and_mints_fresh_graph_ids() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("lib.rs"), "fn called() {}\n").unwrap();
+    let provider = SourceProvider::default();
+    let first = provider.resolve(root.path(), "workspace-a").unwrap();
+    let second = provider.resolve(root.path(), "workspace-a").unwrap();
+    let first_graph = CoieEngine.extract(&first).unwrap();
+    let second_graph = CoieEngine.extract(&second).unwrap();
 
-    let result = relationships::bounded_for_context(&facts, &requested, 1);
-    assert_eq!(result.outcome, Outcome::Partial);
-    assert_eq!(result.completeness, Completeness::Truncated);
-    assert_eq!(result.data.len(), 1);
-    assert_eq!(result.context, requested);
-    assert_eq!(result.diagnostics.len(), 1);
-    assert!(serialized_size(&result).unwrap() > 0);
+    assert_eq!(
+        first.context.source_snapshot_id,
+        second.context.source_snapshot_id
+    );
+    graph_builder::validate_detailed(&first_graph).unwrap();
+    graph_builder::validate_detailed(&second_graph).unwrap();
+    assert!(
+        first_graph
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Symbol)
+    );
+    assert!(
+        second_graph
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Symbol)
+    );
 }
 
 #[test]
-fn path_depth_zero_is_empty_and_positive_depth_is_bounded() {
-    let context = context("workspace-a");
-    let facts = vec![
-        relationship(context.clone(), "one", "source"),
-        relationship(context, "two", "source"),
-    ];
-    assert!(paths::bounded_outgoing(&facts, "source", 0).is_empty());
-    assert_eq!(paths::bounded_outgoing(&facts, "source", 1).len(), 2);
+fn stable_remote_identity_keeps_repository_and_snapshot_across_checkout_paths() {
+    let first_root = tempfile::tempdir().unwrap();
+    let second_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(first_root.path().join("src")).unwrap();
+    fs::create_dir_all(second_root.path().join("src")).unwrap();
+    let source = "pub fn called() {}\npub fn caller() { called(); }\n";
+    fs::write(first_root.path().join("src/lib.rs"), source).unwrap();
+    fs::write(second_root.path().join("src/lib.rs"), source).unwrap();
+
+    let identity =
+        RepositoryIdentity::from_remote("https://GITHUB.com/CodeMind-Fixture/source-snapshot.git")
+            .unwrap();
+    let provider = SourceProvider::default();
+    let first = provider
+        .resolve_with_repository_identity(
+            first_root.path(),
+            "workspace-a",
+            Some(identity.canonical_locator()),
+        )
+        .unwrap();
+    let second = provider
+        .resolve_with_repository_identity(
+            second_root.path(),
+            "workspace-a",
+            Some(identity.canonical_locator()),
+        )
+        .unwrap();
+
+    assert_ne!(first.root, second.root);
+    assert_eq!(first.context.repository_id, identity.repository_id());
+    assert_eq!(first.context.repository_id, second.context.repository_id);
+    assert_eq!(
+        first.context.source_snapshot_id,
+        second.context.source_snapshot_id
+    );
+    assert_eq!(first.context.graph_version, second.context.graph_version);
+
+    let first_graph = CoieEngine.extract(&first).unwrap();
+    let second_graph = CoieEngine.extract(&second).unwrap();
+    graph_builder::validate_detailed(&first_graph).unwrap();
+    graph_builder::validate_detailed(&second_graph).unwrap();
 }

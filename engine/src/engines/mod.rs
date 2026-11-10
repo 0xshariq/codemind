@@ -4,3 +4,5 @@ pub mod history;
 pub mod pipeline;
 pub mod repository_index;
 pub mod tie;
+
+pub mod bug_detection;

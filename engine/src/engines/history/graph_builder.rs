@@ -1,13 +1,14 @@
-//! Deterministic conversion from raw Git facts to the repository-scoped
-//! History Graph. This module never executes Git commands and never persists
-//! graph data; the Git boundary supplies facts and a later storage phase owns
-//! persistence/verification.
+//! Convert raw Git facts into the repository-scoped History Graph. This
+//! module never executes Git commands and never persists graph data; the Git
+//! boundary supplies facts and a later storage phase owns persistence and
+//! verification. Graph-record IDs are random SHA-256 values scoped to one
+//! projection build. Git commit IDs remain their native stable identifiers.
 
 use crate::{
     git::{GitChangeKind, GitCommit, GitHistory, GitPath},
-    source::identity::digest_bytes,
+    source::identity::RandomIdGenerator,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::model::{
     HISTORY_GRAPH_SCHEMA_VERSION, HistoryChangeKind, HistoryEntity, HistoryEntityData,
@@ -16,11 +17,6 @@ use super::model::{
     validate_path_bytes,
 };
 
-/// Build a repository-scoped graph slice from raw `git/` history facts.
-///
-/// The graph identity includes workspace and repository identity, but not the
-/// source snapshot ID or graph projection version. Re-indexing identical Git
-/// history in a later source snapshot therefore keeps stable History Graph IDs.
 pub fn build_history_graph(
     context: HistoryGraphContext,
     history: &GitHistory,
@@ -48,9 +44,32 @@ pub fn build_history_graph(
         return Err(HistoryGraphError::HeadCommitMissing(head_commit));
     }
 
+    let mut boundary_commit_ids = BTreeSet::new();
+    for commit in commits_by_id.values() {
+        for parent_id in normalized_parent_ids(commit)? {
+            if !commits_by_id.contains_key(&parent_id) {
+                boundary_commit_ids.insert(parent_id);
+            }
+        }
+    }
+
+    let mut id_generator = RandomIdGenerator::default();
+    let mut semantic_relationships = HashSet::new();
+    let mut path_entity_ids: HashMap<(bool, Vec<u8>), String> = HashMap::new();
+    let mut commit_entity_ids = HashMap::new();
+    for commit_id in commits_by_id
+        .keys()
+        .cloned()
+        .chain(boundary_commit_ids.iter().cloned())
+    {
+        commit_entity_ids
+            .entry(commit_id)
+            .or_insert_with(|| id_generator.next("history-entity", "commit"));
+    }
+
     let mut entities: BTreeMap<String, HistoryEntity> = BTreeMap::new();
     let mut relationships: BTreeMap<String, HistoryRelationship> = BTreeMap::new();
-    let repository_entity_id = entity_id("history-repository-", &context, "repository", &[]);
+    let repository_entity_id = id_generator.next("history-entity", "repository");
     insert_entity(
         &mut entities,
         HistoryEntity {
@@ -62,15 +81,17 @@ pub fn build_history_graph(
         },
     )?;
 
-    // First add all scanned commit nodes, then boundary nodes for parent commits
-    // referenced by the scan but outside the retained history window.
+    // Add all scanned commits, then boundary nodes for parent commits outside
+    // the retained window. IDs are minted once and reused for every edge.
     for (commit_id, commit) in &commits_by_id {
         let parent_commit_ids = normalized_parent_ids(commit)?;
-        let commit_entity_id = commit_entity_id(&context, commit_id);
         insert_entity(
             &mut entities,
             HistoryEntity {
-                id: commit_entity_id,
+                id: commit_entity_ids
+                    .get(commit_id)
+                    .expect("scanned commit has a generated graph identity")
+                    .clone(),
                 context: context.clone(),
                 data: HistoryEntityData::Commit {
                     commit_id: commit_id.clone(),
@@ -91,19 +112,14 @@ pub fn build_history_graph(
         )?;
     }
 
-    let mut boundary_commit_ids = BTreeSet::new();
-    for commit in commits_by_id.values() {
-        for parent_id in normalized_parent_ids(commit)? {
-            if !commits_by_id.contains_key(&parent_id) {
-                boundary_commit_ids.insert(parent_id);
-            }
-        }
-    }
     for commit_id in &boundary_commit_ids {
         insert_entity(
             &mut entities,
             HistoryEntity {
-                id: commit_entity_id(&context, commit_id),
+                id: commit_entity_ids
+                    .get(commit_id)
+                    .expect("boundary commit has a generated graph identity")
+                    .clone(),
                 context: context.clone(),
                 data: HistoryEntityData::Commit {
                     commit_id: commit_id.clone(),
@@ -128,23 +144,35 @@ pub fn build_history_graph(
     for commit_id in &all_commit_ids {
         add_relationship(
             &mut relationships,
+            &mut id_generator,
+            &mut semantic_relationships,
             &context,
             HistoryRelationshipKind::ContainsCommit,
             &repository_entity_id,
-            &commit_entity_id(&context, commit_id),
+            commit_entity_ids
+                .get(commit_id)
+                .expect("all commit IDs have generated graph identities"),
             None,
         )?;
     }
 
+    let mut seen_changes = HashSet::new();
     for (commit_id, commit) in &commits_by_id {
-        let from_id = commit_entity_id(&context, commit_id);
+        let from_id = commit_entity_ids
+            .get(commit_id)
+            .expect("scanned commit has a generated graph identity")
+            .clone();
         for parent_id in normalized_parent_ids(commit)? {
             add_relationship(
                 &mut relationships,
+                &mut id_generator,
+                &mut semantic_relationships,
                 &context,
                 HistoryRelationshipKind::ParentCommit,
                 &from_id,
-                &commit_entity_id(&context, &parent_id),
+                commit_entity_ids
+                    .get(&parent_id)
+                    .expect("parent commit has a generated graph identity"),
                 None,
             )?;
         }
@@ -167,32 +195,18 @@ pub fn build_history_graph(
             let old_path_bytes = change.old_path.as_ref().map(git_path_bytes).transpose()?;
             let new_path_bytes = change.new_path.as_ref().map(git_path_bytes).transpose()?;
             let change_kind = history_change_kind(&change.kind);
-            let change_kind_key = change_kind_identity(&change.kind);
-            let old_presence = if old_path_bytes.is_some() {
-                &b"present"[..]
-            } else {
-                &b"absent"[..]
-            };
-            let new_presence = if new_path_bytes.is_some() {
-                &b"present"[..]
-            } else {
-                &b"absent"[..]
-            };
-            let change_identity_fields: Vec<&[u8]> = vec![
-                commit_id.as_bytes(),
-                change.status_code.as_bytes(),
-                change_kind_key.as_bytes(),
-                old_presence,
-                old_path_bytes.as_deref().unwrap_or(&[]),
-                new_presence,
-                new_path_bytes.as_deref().unwrap_or(&[]),
-            ];
-            let change_entity_id = entity_id(
-                "history-change-",
-                &context,
-                "change",
-                &change_identity_fields,
+            let change_key = (
+                commit_id.clone(),
+                change.status_code.clone(),
+                change_kind_identity(&change.kind),
+                old_path_bytes.clone(),
+                new_path_bytes.clone(),
             );
+            if !seen_changes.insert(change_key) {
+                continue;
+            }
+
+            let change_entity_id = id_generator.next("history-entity", "change");
             insert_entity(
                 &mut entities,
                 HistoryEntity {
@@ -209,6 +223,8 @@ pub fn build_history_graph(
             )?;
             add_relationship(
                 &mut relationships,
+                &mut id_generator,
+                &mut semantic_relationships,
                 &context,
                 HistoryRelationshipKind::RecordsChange,
                 &from_id,
@@ -220,6 +236,9 @@ pub fn build_history_graph(
                 let file_id = add_path_and_directories(
                     &mut entities,
                     &mut relationships,
+                    &mut id_generator,
+                    &mut semantic_relationships,
+                    &mut path_entity_ids,
                     &context,
                     &repository_entity_id,
                     &path,
@@ -227,6 +246,8 @@ pub fn build_history_graph(
                 )?;
                 add_relationship(
                     &mut relationships,
+                    &mut id_generator,
+                    &mut semantic_relationships,
                     &context,
                     HistoryRelationshipKind::ChangesPath,
                     &change_entity_id,
@@ -238,6 +259,9 @@ pub fn build_history_graph(
                 let file_id = add_path_and_directories(
                     &mut entities,
                     &mut relationships,
+                    &mut id_generator,
+                    &mut semantic_relationships,
+                    &mut path_entity_ids,
                     &context,
                     &repository_entity_id,
                     &path,
@@ -245,6 +269,8 @@ pub fn build_history_graph(
                 )?;
                 add_relationship(
                     &mut relationships,
+                    &mut id_generator,
+                    &mut semantic_relationships,
                     &context,
                     HistoryRelationshipKind::ChangesPath,
                     &change_entity_id,
@@ -277,9 +303,6 @@ pub fn build_history_graph(
                 .commits
                 .iter()
                 .all(|commit| commit.changed_paths_complete),
-        // Boundary stubs prove at least this many parent commits are outside
-        // the scanned window, even if the raw bounded scan reports only the
-        // generic lower bound of one omitted commit.
         omitted_commits_at_least: history
             .omitted_commits_at_least
             .max(boundary_commit_ids.len() as u64),
@@ -289,9 +312,18 @@ pub fn build_history_graph(
     Ok(graph)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_path_and_directories(
     entities: &mut BTreeMap<String, HistoryEntity>,
     relationships: &mut BTreeMap<String, HistoryRelationship>,
+    id_generator: &mut RandomIdGenerator,
+    semantic_relationships: &mut HashSet<(
+        HistoryRelationshipKind,
+        String,
+        String,
+        Option<HistoryPathRole>,
+    )>,
+    path_entity_ids: &mut HashMap<(bool, Vec<u8>), String>,
     context: &HistoryGraphContext,
     repository_entity_id: &str,
     file_path: &HistoryPath,
@@ -307,7 +339,10 @@ fn add_path_and_directories(
         }
         prefix.extend_from_slice(component);
         let directory_path = history_path_from_bytes(&prefix)?;
-        let directory_id = path_entity_id(context, "history-directory-", "directory", &prefix);
+        let directory_id = path_entity_ids
+            .entry((false, prefix.clone()))
+            .or_insert_with(|| id_generator.next("history-entity", "directory"))
+            .clone();
         insert_entity(
             entities,
             HistoryEntity {
@@ -320,6 +355,8 @@ fn add_path_and_directories(
         )?;
         add_relationship(
             relationships,
+            id_generator,
+            semantic_relationships,
             context,
             HistoryRelationshipKind::ContainsPath,
             &parent_entity_id,
@@ -329,12 +366,14 @@ fn add_path_and_directories(
         parent_entity_id = directory_id;
     }
 
-    // The provided path must be exactly the path represented by the raw bytes.
     let represented_path_bytes = path_bytes(file_path)?;
     if file_path_bytes != represented_path_bytes.as_slice() {
         return Err(HistoryGraphError::InvalidPath(file_path.display.clone()));
     }
-    let file_id = path_entity_id(context, "history-file-", "file", file_path_bytes);
+    let file_id = path_entity_ids
+        .entry((true, file_path_bytes.to_vec()))
+        .or_insert_with(|| id_generator.next("history-entity", "file"))
+        .clone();
     insert_entity(
         entities,
         HistoryEntity {
@@ -347,6 +386,8 @@ fn add_path_and_directories(
     )?;
     add_relationship(
         relationships,
+        id_generator,
+        semantic_relationships,
         context,
         HistoryRelationshipKind::ContainsPath,
         &parent_entity_id,
@@ -447,65 +488,32 @@ fn normalize_commit_id(value: &str) -> Result<String, HistoryGraphError> {
     Ok(value.to_ascii_lowercase())
 }
 
-fn commit_entity_id(context: &HistoryGraphContext, commit_id: &str) -> String {
-    entity_id(
-        "history-commit-",
-        context,
-        "commit",
-        &[commit_id.as_bytes()],
-    )
-}
-
-fn path_entity_id(
-    context: &HistoryGraphContext,
-    prefix: &str,
-    domain: &str,
-    path_bytes: &[u8],
-) -> String {
-    entity_id(prefix, context, domain, &[path_bytes])
-}
-
-fn entity_id(
-    prefix: &str,
-    context: &HistoryGraphContext,
-    domain: &str,
-    identity_fields: &[&[u8]],
-) -> String {
-    let mut material = b"codemind-history-graph-entity-v1\0".to_vec();
-    append_field(&mut material, context.workspace_id.as_bytes());
-    append_field(&mut material, context.repository_id.as_bytes());
-    append_field(&mut material, domain.as_bytes());
-    for field in identity_fields {
-        append_field(&mut material, field);
-    }
-    format!("{prefix}{}", digest_bytes(&material))
-}
-
+#[allow(clippy::too_many_arguments)]
 fn add_relationship(
     relationships: &mut BTreeMap<String, HistoryRelationship>,
+    id_generator: &mut RandomIdGenerator,
+    semantic_relationships: &mut HashSet<(
+        HistoryRelationshipKind,
+        String,
+        String,
+        Option<HistoryPathRole>,
+    )>,
     context: &HistoryGraphContext,
     kind: HistoryRelationshipKind,
     from: &str,
     to: &str,
     path_role: Option<HistoryPathRole>,
 ) -> Result<(), HistoryGraphError> {
-    let kind_name = relationship_kind_identity(&kind);
-    let role_name = match path_role.as_ref() {
-        Some(HistoryPathRole::Old) => "old",
-        Some(HistoryPathRole::New) => "new",
-        None => "none",
-    };
-    let id = entity_id(
-        "history-rel-",
-        context,
-        "relationship",
-        &[
-            kind_name.as_bytes(),
-            from.as_bytes(),
-            to.as_bytes(),
-            role_name.as_bytes(),
-        ],
+    let semantic_key = (
+        kind.clone(),
+        from.to_owned(),
+        to.to_owned(),
+        path_role.clone(),
     );
+    if !semantic_relationships.insert(semantic_key) {
+        return Ok(());
+    }
+    let id = id_generator.next("history-relationship", relationship_kind_identity(&kind));
     let relationship = HistoryRelationship {
         id: id.clone(),
         kind,
@@ -514,14 +522,8 @@ fn add_relationship(
         context: context.clone(),
         path_role,
     };
-    match relationships.get(&id) {
-        Some(existing) if existing == &relationship => Ok(()),
-        Some(_) => Err(HistoryGraphError::DuplicateRelationshipId(id)),
-        None => {
-            relationships.insert(id, relationship);
-            Ok(())
-        }
-    }
+    relationships.insert(id, relationship);
+    Ok(())
 }
 
 fn relationship_kind_identity(kind: &HistoryRelationshipKind) -> &'static str {
@@ -546,9 +548,4 @@ fn insert_entity(
             Ok(())
         }
     }
-}
-
-fn append_field(output: &mut Vec<u8>, field: &[u8]) {
-    output.extend_from_slice(&(field.len() as u64).to_be_bytes());
-    output.extend_from_slice(field);
 }
